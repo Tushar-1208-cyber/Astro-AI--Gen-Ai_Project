@@ -131,7 +131,7 @@ firebase-hosting/
 
 # Google Cloud Platform
 # Exclude all JSON files except important config files
-*.json
+# *.json  // isko isliye htaya kyunki ye bchi files ko ignore krva rha tha 
 !package.json
 !package-lock.json
 !tsconfig.json
