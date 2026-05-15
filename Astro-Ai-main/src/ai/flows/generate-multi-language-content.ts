@@ -1,0 +1,1 @@
+// This file is deleted. The functionality is replaced by /src/ai/flows/generate-localized-content.ts
