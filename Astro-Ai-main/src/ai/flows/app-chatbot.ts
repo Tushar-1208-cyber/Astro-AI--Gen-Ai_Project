@@ -1,39 +1,17 @@
-import { 
-    AppChatbotInputSchema, 
-    AppChatbotOutputSchema,
-    type AppChatbotInput,
-    type AppChatbotOutput 
-} from './app-chatbot.types';
+'use server';
 
-const OLLAMA_URL = 'http://localhost:11434/api/generate';
+import { type AppChatbotInput, type AppChatbotOutput } from './app-chatbot.types';
+import { executeTextGeneration } from '../provider';
 
 export async function appChatbot(input: AppChatbotInput): Promise<AppChatbotOutput> {
-    console.log(`🦙 Chatbot: Calling Ollama for: ${input.query.substring(0, 30)}...`);
+    const prompt = `You are Astro's AI Assistant for the educational platform. Give a clear, helpful response to: ${input.query}`;
 
-    try {
-        const response = await fetch(OLLAMA_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: 'llama3', // Default Ollama model
-                prompt: `You are Astro's AI Assistant. Give a helpful response to: ${input.query}`,
-                stream: false,
-            }),
-        });
+    const response = await executeTextGeneration({
+        prompt,
+        maxTokens: 1024,
+        temperature: 0.7,
+        capability: 'text-generation'
+    });
 
-        if (!response.ok) {
-            throw new Error(`Ollama responded with ${response.status}`);
-        }
-
-        const data = await response.json();
-        
-        return { 
-            response: data.response || "Ollama generated an empty response." 
-        };
-    } catch (error) {
-        console.error('❌ Chatbot Ollama Error:', error);
-        return { 
-            response: "I can't reach Ollama. Please make sure Ollama is RUNNING on your laptop and you have the 'llama3' model downloaded (`ollama run llama3`)." 
-        };
-    }
+    return { response };
 }
