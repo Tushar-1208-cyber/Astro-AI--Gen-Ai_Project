@@ -8,28 +8,27 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, BookOpen, KeyRound, Phone } from 'lucide-react';
+import { Loader2, KeyRound, Phone, AlertCircle, Shield } from 'lucide-react';
 import { useLanguage } from '@/context/language-context';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { RecaptchaVerifier, signInWithPhoneNumber, ConfirmationResult } from 'firebase/auth';
-import { auth } from '../../lib/firebase';
+import { useAuth } from '@/context/auth-context';
 
-const GoogleIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M21.35 11.1H12.18V13.83H18.69C18.36 17.64 15.19 19.27 12.19 19.27C8.36 19.27 5.03 16.25 5.03 12.55C5.03 8.85 8.34 5.82 12.19 5.82C14.03 5.82 15.63 6.42 16.89 7.57L19.31 5.18C17.22 3.23 14.81 2 12.19 2C6.92 2 2.73 6.38 2.73 11.99C2.73 17.6 6.92 22 12.19 22C17.6 22 21.54 18.33 21.54 12.25C21.54 11.88 21.49 11.49 21.35 11.1Z"></path></svg>;
+const GoogleIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" className="mr-2">
+    <path fill="currentColor" d="M21.35 11.1H12.18V13.83H18.69C18.36 17.64 15.19 19.27 12.19 19.27C8.36 19.27 5.03 16.25 5.03 12.55C5.03 8.85 8.34 5.82 12.19 5.82C14.03 5.82 15.63 6.42 16.89 7.57L19.31 5.18C17.22 3.23 14.81 2 12.19 2C6.92 2 2.73 6.38 2.73 11.99C2.73 17.6 6.92 22 12.19 22C17.6 22 21.54 18.33 21.54 12.25C21.54 11.88 21.49 11.49 21.35 11.1Z" />
+  </svg>
+);
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState('');
-  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
-
   const [isLoading, setIsLoading] = useState(false);
-  const [isPhoneLoading, setIsPhoneLoading] = useState(false);
-  const [isOtpLoading, setIsOtpLoading] = useState(false);
   const router = useRouter();
   const { toast } = useToast();
   const { t } = useLanguage();
+  const { refreshUser } = useAuth();
   const [logoBounce, setLogoBounce] = useState(false);
+
   useEffect(() => {
     setLogoBounce(true);
   }, []);
@@ -48,11 +47,14 @@ export default function LoginPage() {
       const data = await res.json();
 
       if (res.ok) {
-        toast({ title: 'Login Successful', description: 'Welcome back!' });
+        toast({ title: 'Login Successful', description: 'Welcome back to Astro AI!' });
+        if (refreshUser) {
+          await refreshUser();
+        }
         router.push('/');
         router.refresh();
       } else {
-        throw new Error(data.error || 'Login failed');
+        throw new Error(data.error || 'Login failed. Please check your credentials.');
       }
     } catch (error: any) {
       toast({
@@ -65,92 +67,39 @@ export default function LoginPage() {
     }
   };
 
-  const handleGoogleSignIn = async () => {
-    toast({
-      title: 'Not Implemented',
-      description: 'Google Sign-In is currently disabled as we migrated to MongoDB.',
-    });
-  }
-
-  const generateRecaptcha = () => {
-    try {
-      if (!auth) return;
-      window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-        'size': 'invisible',
-        'callback': () => {
-          // reCAPTCHA solved, allow signInWithPhoneNumber.
-        }
-      });
-    } catch (e) {
-      console.error("Error generating reCAPTCHA", e);
-    }
-  }
-
-  const handlePhoneSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsPhoneLoading(true);
-    generateRecaptcha();
-    const appVerifier = window.recaptchaVerifier;
-    if (!auth) return;
-    try {
-      const result = await signInWithPhoneNumber(auth, `+${phone}`, appVerifier);
-      setConfirmationResult(result);
-      toast({ title: 'OTP Sent', description: 'Please check your phone for the verification code.' });
-    } catch (error: any) {
-      toast({
-        title: 'Phone Sign-In Failed',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } finally {
-      setIsPhoneLoading(false);
-    }
-  }
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!confirmationResult) return;
-    setIsOtpLoading(true);
-    try {
-      await confirmationResult.confirm(otp);
-      router.push('/');
-    } catch (error: any) {
-      toast({
-        title: 'OTP Verification Failed',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } finally {
-      setIsOtpLoading(false);
-    }
-  }
-
-
   return (
-    <div className="flex items-center justify-center min-h-screen">
-      <Card className="w-full max-w-lg shadow-2xl rounded-2xl border-0 bg-white/90 backdrop-blur-md transition-transform duration-300 ease-in-out hover:scale-105 animate-fade-in">
-        <CardHeader className="flex flex-col items-center gap-2 pb-0">
-          <img src="/1753127637.jpeg" alt="Astro AI Logo" className={`w-24 h-24 mb-2 rounded-full shadow-lg border-4 border-blue-100 transition-transform duration-700 ${logoBounce ? 'animate-bounce' : ''}`} />
-          <CardTitle className="text-3xl font-headline font-bold text-gray-800">Astro AI</CardTitle>
-          <CardDescription className="text-base text-gray-500 mb-2">AI for Education</CardDescription>
+    <div className="flex items-center justify-center min-h-screen px-4 py-8 bg-gradient-to-b from-background to-secondary/20">
+      <Card className="w-full max-w-lg shadow-xl rounded-2xl border bg-card backdrop-blur-md">
+        <CardHeader className="flex flex-col items-center gap-2 pb-2 text-center">
+          <div className="w-20 h-20 mb-2 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center shadow-inner">
+            <span className="text-4xl">🌌</span>
+          </div>
+          <CardTitle className="text-3xl font-headline font-bold">Astro AI</CardTitle>
+          <CardDescription className="text-base">Secure Gen-AI Educational Platform</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6 pt-0">
+        <CardContent className="space-y-6 pt-2">
           <Tabs defaultValue="email" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="email"><KeyRound className="mr-2" /> Email</TabsTrigger>
-              <TabsTrigger value="phone"><Phone className="mr-2" /> Phone</TabsTrigger>
+              <TabsTrigger value="email">
+                <KeyRound className="w-4 h-4 mr-2" /> Email
+              </TabsTrigger>
+              <TabsTrigger value="phone">
+                <Phone className="w-4 h-4 mr-2" /> Phone
+              </TabsTrigger>
             </TabsList>
-            <TabsContent value="email" className="space-y-4">
-              <form onSubmit={handleEmailLogin} className="space-y-4 pt-4">
+
+            <TabsContent value="email" className="space-y-4 pt-4">
+              <form onSubmit={handleEmailLogin} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email">Email Address</Label>
                   <Input
                     id="email"
                     type="email"
-                    placeholder="m@example.com"
+                    placeholder="teacher@school.edu"
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
+                    autoComplete="email"
                   />
                 </div>
                 <div className="space-y-2">
@@ -158,74 +107,73 @@ export default function LoginPage() {
                   <Input
                     id="password"
                     type="password"
+                    placeholder="Enter your password"
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="current-password"
                   />
                 </div>
-                <Button type="submit" className="w-full" disabled={isLoading}>
-                  {isLoading && <Loader2 className="mr-2 animate-spin" />}
-                  Login with Email
+                <Button type="submit" className="w-full font-semibold" disabled={isLoading} size="lg">
+                  {isLoading && <Loader2 className="mr-2 animate-spin w-4 h-4" />}
+                  Sign In
                 </Button>
               </form>
-              <div className="relative">
+
+              <div className="relative my-4">
                 <div className="absolute inset-0 flex items-center">
                   <span className="w-full border-t" />
                 </div>
                 <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-background px-2 text-muted-foreground">Or continue with</span>
+                  <span className="bg-card px-2 text-muted-foreground">Additional Sign-in Methods</span>
                 </div>
               </div>
-              <Button variant="outline" className="w-full" onClick={handleGoogleSignIn} disabled={isLoading}>
-                {isLoading ? <Loader2 className="mr-2 animate-spin" /> : <GoogleIcon />}
-                Sign in with Google
-              </Button>
+
+              {/* Disabled Google Login button with honest explanation */}
+              <div className="space-y-2">
+                <Button variant="outline" className="w-full opacity-60 cursor-not-allowed" disabled={true}>
+                  <GoogleIcon />
+                  Sign in with Google (Coming Soon)
+                </Button>
+                <p className="text-xs text-center text-muted-foreground">
+                  OAuth single sign-on is queued for an upcoming release. Please use email credentials.
+                </p>
+              </div>
             </TabsContent>
-            <TabsContent value="phone">
-              {!confirmationResult ? (
-                <form onSubmit={handlePhoneSignIn} className="space-y-4 pt-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="phone">Phone Number</Label>
-                    <Input id="phone" type="tel" placeholder="e.g. 911234567890" required value={phone} onChange={(e) => setPhone(e.target.value)} />
-                    <p className="text-xs text-muted-foreground">Include country code without '+' sign.</p>
-                  </div>
-                  <Button type="submit" className="w-full" disabled={isPhoneLoading}>
-                    {isPhoneLoading ? <Loader2 className="mr-2 animate-spin" /> : <Phone className="mr-2" />}
-                    Send Verification Code
-                  </Button>
-                </form>
-              ) : (
-                <form onSubmit={handleVerifyOtp} className="space-y-4 pt-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="otp">Verification Code</Label>
-                    <Input id="otp" type="text" placeholder="Enter OTP" required value={otp} onChange={(e) => setOtp(e.target.value)} />
-                  </div>
-                  <Button type="submit" className="w-full" disabled={isOtpLoading}>
-                    {isOtpLoading ? <Loader2 className="mr-2 animate-spin" /> : <KeyRound className="mr-2" />}
-                    Verify OTP & Login
-                  </Button>
-                </form>
-              )}
+
+            <TabsContent value="phone" className="space-y-4 pt-4">
+              <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-900 dark:text-amber-200 text-sm space-y-2">
+                <div className="flex items-center gap-2 font-semibold">
+                  <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  Phone OTP Login Temporarily Disabled
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  To ensure complete data isolation and avoid unverified third-party tokens, phone authentication is currently undergoing migration to our unified MongoDB session system.
+                </p>
+                <p className="text-xs font-medium">
+                  Please use the <strong>Email</strong> tab to log in securely.
+                </p>
+              </div>
+
+              <div className="space-y-2 opacity-50">
+                <Label htmlFor="disabled-phone">Phone Number</Label>
+                <Input id="disabled-phone" type="tel" placeholder="+91 98765 43210" disabled />
+              </div>
+
+              <Button disabled className="w-full cursor-not-allowed">
+                <Phone className="w-4 h-4 mr-2" /> Phone Sign-in Offline
+              </Button>
             </TabsContent>
           </Tabs>
 
-          <div id="recaptcha-container"></div>
-
-          <div className="mt-4 text-center text-sm">
-            Don&apos;t have an account?{' '}
-            <Link href="/signup" className="underline">
-              Sign up
+          <div className="mt-4 text-center text-sm text-muted-foreground">
+            Don&apos;t have an account yet?{' '}
+            <Link href="/signup" className="font-semibold text-primary underline underline-offset-4 hover:text-primary/80">
+              Create an account
             </Link>
           </div>
         </CardContent>
       </Card>
     </div>
   );
-}
-
-// @ts-ignore
-declare global {
-  interface Window {
-    recaptchaVerifier: RecaptchaVerifier;
-  }
 }
