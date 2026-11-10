@@ -26,7 +26,6 @@ import { Badge } from "@/components/ui/badge";
 import { addCalendarEventAction, getCalendarEventsAction, deleteCalendarEventAction } from "@/lib/actions";
 import type { CalendarEvent } from "@/lib/firestore";
 import { useAuth } from "@/context/auth-context";
-import { auth } from "@/lib/firebase";
 
 const eventTypeConfig = {
     Lesson: { icon: BookOpen, color: "bg-blue-500" },
@@ -42,51 +41,53 @@ export default function CalendarPage() {
   const { toast } = useToast();
   const { authStatus, user } = useAuth();
 
-  // Helper function to get ID token
-  const getIdToken = async (): Promise<string | null> => {
-    if (!user) return null;
-    try {
-      return typeof user.getIdToken === 'function' ? await user.getIdToken() : null;
-    } catch (error) {
-      console.error("Error getting ID token:", error);
-      return null;
-    }
-  };
-
   useEffect(() => {
     async function fetchEvents() {
         setIsLoading(true);
-        const token = await getIdToken();
-        const result = await getCalendarEventsAction(token || undefined);
-        if(result.success && result.data) {
-            setEvents(result.data);
-        } else {
-            toast({ title: "Error", description: result.error || "Could not fetch calendar events.", variant: "destructive" });
+        try {
+            const result = await getCalendarEventsAction();
+            if(result.success && result.data) {
+                setEvents(result.data);
+            } else {
+                toast({ title: "Error", description: result.error || "Could not fetch calendar events.", variant: "destructive" });
+            }
+        } catch (error) {
+            toast({ title: "Error", description: error instanceof Error ? error.message : "Could not fetch calendar events.", variant: "destructive" });
+        } finally {
+            setIsLoading(false);
         }
-        setIsLoading(false);
     }
     fetchEvents();
   }, [authStatus, user]);
 
   const addEvent = async (event: Omit<CalendarEvent, 'id' | 'uid'>) => {
-    const token = await getIdToken();
-    const result = await addCalendarEventAction(event, token || undefined);
-    if (result.success && result.data) {
-        setEvents(result.data);
-        toast({ title: "Event Added", description: "The event has been added to your calendar." });
-    } else {
-        toast({ title: "Error", description: result.error, variant: "destructive" });
+    try {
+        const result = await addCalendarEventAction(event);
+        if (result.success && result.data) {
+            setEvents(result.data);
+            toast({ title: "Event Added", description: "The event has been added to your calendar." });
+            return true;
+        } else {
+            toast({ title: "Error", description: result.error || "Failed to add event.", variant: "destructive" });
+            return false;
+        }
+    } catch (error) {
+        toast({ title: "Error", description: error instanceof Error ? error.message : "Failed to add event.", variant: "destructive" });
+        return false;
     }
   };
   
   const deleteEvent = async (id: string) => {
-    const token = await getIdToken();
-    const result = await deleteCalendarEventAction(id, token || undefined);
-    if (result.success && result.data) {
-        setEvents(result.data);
-        toast({ title: "Event Deleted" });
-    } else {
-        toast({ title: "Error", description: result.error, variant: "destructive" });
+    try {
+        const result = await deleteCalendarEventAction(id);
+        if (result.success && result.data) {
+            setEvents(result.data);
+            toast({ title: "Event Deleted" });
+        } else {
+            toast({ title: "Error", description: result.error || "Failed to delete event.", variant: "destructive" });
+        }
+    } catch (error) {
+        toast({ title: "Error", description: error instanceof Error ? error.message : "Failed to delete event.", variant: "destructive" });
     }
   };
   
@@ -96,10 +97,10 @@ export default function CalendarPage() {
         eventDate = e.date;
     } else if (typeof e.date === 'string') {
         eventDate = new Date(e.date);
-    } else if (e.date && typeof e.date === 'object' && typeof (e.date as any).toDate === 'function') {
+    } else if (e.date && typeof (e.date as any).toDate === 'function') {
         eventDate = (e.date as any).toDate();
-    } else if (e.date && typeof e.date === 'object' && '_seconds' in e.date && typeof e.date._seconds === 'number') {
-        eventDate = new Date(e.date._seconds * 1000);
+    } else if (e.date && typeof (e.date as any)._seconds === 'number') {
+        eventDate = new Date((e.date as any)._seconds * 1000);
     } else {
         return false;
     }
@@ -213,24 +214,32 @@ export default function CalendarPage() {
 }
 
 
-function AddEventDialog({ onAddEvent }: { onAddEvent: (event: Omit<CalendarEvent, 'id' | 'uid'>) => void }) {
+function AddEventDialog({ onAddEvent }: { onAddEvent: (event: Omit<CalendarEvent, 'id' | 'uid'>) => Promise<boolean> | void }) {
     const [title, setTitle] = useState("");
     const [date, setDate] = useState<Date | undefined>(new Date());
     const [type, setType] = useState<CalendarEvent['type']>('Lesson');
     const [isOpen, setIsOpen] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
     const { toast } = useToast();
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!title || !date) {
             toast({ title: "Missing fields", description: "Please provide a title and a date.", variant: "destructive" });
             return;
         }
-        onAddEvent({ title, date, type });
-        setTitle("");
-        setDate(new Date());
-        setType("Lesson");
-        setIsOpen(false);
+        setIsSubmitting(true);
+        try {
+            const success = await onAddEvent({ title, date, type });
+            if (success !== false) {
+                setTitle("");
+                setDate(new Date());
+                setType("Lesson");
+                setIsOpen(false);
+            }
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     return (
@@ -290,7 +299,10 @@ function AddEventDialog({ onAddEvent }: { onAddEvent: (event: Omit<CalendarEvent
                         <DialogClose asChild>
                             <Button type="button" variant="secondary">Cancel</Button>
                         </DialogClose>
-                        <Button type="submit">Add Event</Button>
+                        <Button type="submit" disabled={isSubmitting}>
+                            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            Add Event
+                        </Button>
                     </DialogFooter>
                 </form>
             </DialogContent>
