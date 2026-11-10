@@ -1,20 +1,25 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 
-type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+export type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
-interface User {
+export interface User {
+  id: string;
   email: string;
   name?: string;
+  displayName?: string;
+  photoURL?: string;
+  role?: string;
 }
 
-interface AuthContextType {
+export interface AuthContextType {
   user: User | null;
   authStatus: AuthStatus;
-  logout: () => void;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -27,12 +32,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const pathname = usePathname();
   const router = useRouter();
 
-  const checkAuth = async () => {
+  const checkAuth = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/me');
+      const res = await fetch('/api/auth/me', {
+        method: 'GET',
+        cache: 'no-store',
+      });
+
       if (res.ok) {
         const data = await res.json();
-        setUser(data.user);
+        const resolvedUser: User = {
+          ...data.user,
+          displayName: data.user.name || data.user.email.split('@')[0],
+          photoURL: '',
+        };
+        setUser(resolvedUser);
         setAuthStatus("authenticated");
       } else {
         setUser(null);
@@ -42,20 +56,22 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setUser(null);
       setAuthStatus("unauthenticated");
     }
-  };
+  }, []);
 
   useEffect(() => {
     checkAuth();
-  }, []);
+  }, [checkAuth]);
 
   const logout = async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (error) {
+      console.error('[AuthContext] Logout error:', error);
+    } finally {
       setUser(null);
       setAuthStatus("unauthenticated");
       router.push('/login');
-    } catch (error) {
-      console.error('Logout error:', error);
+      router.refresh();
     }
   };
 
@@ -73,32 +89,34 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   if (authStatus === 'loading') {
     return (
-       <div className="flex items-center justify-center h-screen">
-           <Loader2 className="w-16 h-16 animate-spin text-primary" />
-       </div>
+      <div className="flex flex-col items-center justify-center h-screen space-y-4">
+        <Loader2 className="w-12 h-12 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground animate-pulse">Initializing Astro AI secure session...</p>
+      </div>
     );
   }
 
-  // If we are on a public page, or we are authenticated, show the children
+  // If on a public page or authenticated, render children
   if (publicRoutes.includes(pathname) || authStatus === 'authenticated') {
     return (
-      <AuthContext.Provider value={{ user, authStatus, logout }}>
+      <AuthContext.Provider value={{ user, authStatus, logout, refreshUser: checkAuth }}>
         {children}
       </AuthContext.Provider>
     );
   }
-  
-  // If we are unauthenticated and on a private page, show a loader while redirecting
+
+  // Unauthenticated user on private page: show loader while redirecting
   return (
-    <div className="flex items-center justify-center h-screen">
-       <Loader2 className="w-16 h-16 animate-spin text-primary" />
+    <div className="flex flex-col items-center justify-center h-screen space-y-4">
+      <Loader2 className="w-12 h-12 animate-spin text-primary" />
+      <p className="text-sm text-muted-foreground">Redirecting to login...</p>
     </div>
   );
 };
 
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
-  if (context === undefined) {
+  if (!context) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
