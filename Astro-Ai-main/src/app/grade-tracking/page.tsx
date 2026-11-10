@@ -49,6 +49,7 @@ import { useAuth } from "@/context/auth-context";
 export default function GradeTrackingPage() {
   const [grades, setGrades] = useState<GradeEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [selectedClass, setSelectedClass] = useState<string>("");
   const { toast } = useToast();
@@ -58,14 +59,18 @@ export default function GradeTrackingPage() {
   useEffect(() => {
     async function fetchGrades() {
         setIsLoading(true);
-        const token = user && typeof user.getIdToken === 'function' ? await user.getIdToken() : undefined;
-        const result = await getGradesAction(token);
-        if(result.success && result.data) {
-            setGrades(result.data);
-        } else {
-            toast({ title: "Error", description: "Could not fetch grades.", variant: "destructive" });
+        try {
+            const result = await getGradesAction();
+            if(result.success && result.data) {
+                setGrades(result.data);
+            } else {
+                toast({ title: "Error", description: result.error || "Could not fetch grades.", variant: "destructive" });
+            }
+        } catch (error) {
+            toast({ title: "Error", description: error instanceof Error ? error.message : "Could not fetch grades.", variant: "destructive" });
+        } finally {
+            setIsLoading(false);
         }
-        setIsLoading(false);
     }
     fetchGrades();
   }, [user]);
@@ -185,14 +190,17 @@ export default function GradeTrackingPage() {
         toast({title: "Error", description: "User not authenticated.", variant: "destructive" });
         return;
     }
-    const token = typeof user.getIdToken === 'function' ? await user.getIdToken() : undefined;
-    const result = await addGradeAction(entry, token);
-    if(result.success && result.data) {
-        setGrades(result.data);
-        setIsDialogOpen(false);
-        toast({title: "Success", description: "Grade has been added."})
-    } else {
-        toast({title: "Error", description: result.error, variant: "destructive" });
+    try {
+        const result = await addGradeAction(entry);
+        if(result.success && result.data) {
+            setGrades(result.data);
+            setIsDialogOpen(false);
+            toast({title: "Success", description: "Grade has been added."});
+        } else {
+            toast({title: "Error", description: result.error || "Failed to add grade.", variant: "destructive" });
+        }
+    } catch (error) {
+        toast({title: "Error", description: error instanceof Error ? error.message : "Failed to add grade.", variant: "destructive" });
     }
   };
 
@@ -204,16 +212,20 @@ export default function GradeTrackingPage() {
     const originalGrades = [...grades];
     setGrades(prev => prev.filter(grade => grade.id !== id));
     
-    const token = typeof user.getIdToken === 'function' ? await user.getIdToken() : undefined;
-    const result = await deleteGradeAction(id, token);
-    if(result.success && result.data) {
-        setGrades(result.data);
-        toast({ title: "Success", description: "Grade has been removed." });
-    } else {
+    try {
+        const result = await deleteGradeAction(id);
+        if(result.success && result.data) {
+            setGrades(result.data);
+            toast({ title: "Success", description: "Grade has been removed." });
+        } else {
+            setGrades(originalGrades);
+            toast({ title: "Error", description: result.error || "Failed to remove grade.", variant: "destructive" });
+        }
+    } catch (error) {
         setGrades(originalGrades);
-        toast({ title: "Error", description: result.error, variant: "destructive" });
+        toast({ title: "Error", description: error instanceof Error ? error.message : "Failed to remove grade.", variant: "destructive" });
     }
-  }
+  };
 
   return (
     <div className="space-y-8">
@@ -223,19 +235,33 @@ export default function GradeTrackingPage() {
           <p className="text-muted-foreground">Monitor student performance and generate reports class-wise.</p>
         </div>
         <div className="flex gap-2 no-print">
-            <Button onClick={async () => {
-                if (grades.length === 0) {
-                    toast({ title: "No Data", description: "Please add some grades first for analysis." });
-                    return;
-                }
-                toast({ title: "Astro is analyzing...", description: "Looking at student performance..." });
-                const analysisPrompt = `Analyze these student grades and give 3-4 bullet points of teacher insights: ${JSON.stringify(grades.map(g => ({ name: g.studentName, subject: g.subject, marks: g.grade })))}`;
-                const result = await askAstroAction({ question: analysisPrompt, language: language });
-                if (result.success) {
-                    toast({ title: "AI Insight", description: result.data.answer, duration: 10000 });
-                }
-            }} variant="secondary" className="bg-purple-600 hover:bg-purple-700 text-white">
-                <Lightbulb className="mr-2" />
+            <Button 
+                disabled={isAnalyzing}
+                onClick={async () => {
+                    if (grades.length === 0) {
+                        toast({ title: "No Data", description: "Please add some grades first for analysis." });
+                        return;
+                    }
+                    setIsAnalyzing(true);
+                    toast({ title: "Astro is analyzing...", description: "Looking at student performance..." });
+                    try {
+                        const analysisPrompt = `Analyze these student grades and give 3-4 bullet points of teacher insights: ${JSON.stringify(grades.map(g => ({ name: g.studentName, subject: g.subject, marks: g.grade })))}`;
+                        const result = await askAstroAction({ question: analysisPrompt, gradeLevel: 8, language: language });
+                        if (result.success && result.data) {
+                            toast({ title: "AI Insight", description: result.data.answer, duration: 10000 });
+                        } else {
+                            toast({ title: "AI Analysis Failed", description: ('error' in result && result.error) ? result.error : "Could not analyze grades.", variant: "destructive" });
+                        }
+                    } catch (error) {
+                        toast({ title: "AI Analysis Failed", description: error instanceof Error ? error.message : "Could not analyze grades.", variant: "destructive" });
+                    } finally {
+                        setIsAnalyzing(false);
+                    }
+                }} 
+                variant="secondary" 
+                className="bg-purple-600 hover:bg-purple-700 text-white"
+            >
+                {isAnalyzing ? <Loader2 className="mr-2 animate-spin h-4 w-4" /> : <Lightbulb className="mr-2" />}
                 AI Analysis
             </Button>
             <AddGradeDialog onAddGrade={addGrade} open={isDialogOpen} onOpenChange={setIsDialogOpen} />
