@@ -36,20 +36,30 @@ export default function MentoringPage() {
   useEffect(() => {
     async function fetchStudents() {
       setIsStudentListLoading(true);
-      const result = await getStudentsAction();
-      if (result.success && result.data) {
-        setStudents(result.data);
-      } else if (!result.success) {
+      try {
+        const result = await getStudentsAction();
+        if (result.success && result.data) {
+          setStudents(result.data);
+        } else if (!result.success) {
+          setStudents([]);
+          toast({
+            title: "Error Loading Students",
+            description: result.error || "Failed to load student roster.",
+            variant: "destructive",
+          });
+        } else {
+          setStudents([]);
+        }
+      } catch (error) {
         setStudents([]);
         toast({
           title: "Error Loading Students",
-          description: result.error || "Failed to load student roster.",
+          description: error instanceof Error ? error.message : "Failed to load student roster.",
           variant: "destructive",
         });
-      } else {
-        setStudents([]);
+      } finally {
+        setIsStudentListLoading(false);
       }
-      setIsStudentListLoading(false);
     }
     fetchStudents();
   }, [toast, user]);
@@ -280,9 +290,9 @@ export default function MentoringPage() {
         description: "Failed to fetch student data or generate plan.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-    
-    setIsLoading(false);
   };
   
   const selectedStudent = students.find(s => s.id === selectedStudentId);
