@@ -1,27 +1,37 @@
 import { NextResponse } from 'next/server';
-import jwt from 'jsonwebtoken';
 import dbConnect from '@/lib/db';
 import User from '@/models/User';
+import { getAuthenticatedUser, AUTH_COOKIE_NAME } from '@/lib/auth';
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
-    const token = req.headers.get('cookie')?.split('auth_token=')[1]?.split(';')[0];
+    const authUser = await getAuthenticatedUser();
 
-    if (!token) {
+    if (!authUser) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    const decoded: any = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret');
-    
     await dbConnect();
-    const user = await User.findById(decoded.userId).select('-password');
+    const user = await User.findById(authUser.userId).select('-password');
 
     if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+      // User account was deleted, clear stale session
+      const response = NextResponse.json({ error: 'User account not found' }, { status: 401 });
+      response.cookies.set(AUTH_COOKIE_NAME, '', { maxAge: 0, path: '/' });
+      return response;
     }
 
-    return NextResponse.json({ user });
+    return NextResponse.json({
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name || '',
+        role: user.role || 'teacher',
+        createdAt: user.createdAt,
+      },
+    });
   } catch (error) {
-    return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+    console.error('[Auth/Me] Error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
