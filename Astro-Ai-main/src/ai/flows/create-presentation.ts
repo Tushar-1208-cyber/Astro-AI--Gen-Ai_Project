@@ -1,57 +1,57 @@
-
 'use server';
 
-const LOCAL_AI_URL = 'http://127.0.0.1:8000/generate';
+import { executeStructuredGeneration } from '../provider';
+import type { CreatePresentationInput, CreatePresentationOutput } from './create-presentation.types';
 
-export async function createPresentation(input: any) {
-    const GEMINI_API_KEY = process.env.GOOGLE_GENAI_API_KEY;
-    console.log(`🚀 [System] Generating Presentation for: ${input.topic} (Key: ${!!GEMINI_API_KEY})`);
-    
-    const prompt = `Create a presentation about "${input.topic}" with ${input.numSlides} slides. Return ONLY JSON.`;
+export async function createPresentation(input: CreatePresentationInput): Promise<CreatePresentationOutput> {
+    const prompt = `You are a professional educational presentation designer.
+Create a presentation about "${input.topic}" with ${input.numSlides} slides.
+${input.additionalInstructions ? `Additional context: ${input.additionalInstructions}` : ''}
 
-    try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { response_mime_type: "application/json" }
-            })
-        });
+Return ONLY a valid JSON object matching this structure:
+{
+  "title": "Presentation Title",
+  "slides": [
+    {
+      "title": "Slide Title",
+      "content": ["Point 1", "Point 2", "Point 3"],
+      "speakerNotes": "Notes for the teacher",
+      "visualSuggestion": "Visual suggestion description"
+    }
+  ]
+}`;
 
-        const data = await response.json();
-        if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
-            const output = JSON.parse(data.candidates[0].content.parts[0].text);
-            return {
-                title: output.title,
-                slides: output.slides.map((s: any) => ({ ...s, imageDataUri: "" }))
-            };
-        }
-        console.error("❌ Gemini Error:", JSON.stringify(data));
-    } catch (e) {
-        console.error("❌ Gemini Fetch failed:", e);
+    const raw = await executeStructuredGeneration<any>({
+        prompt,
+        maxTokens: 2048,
+        temperature: 0.7
+    });
+
+    if (!raw || !raw.slides || !Array.isArray(raw.slides)) {
+        throw new Error("AI generation failed to produce valid presentation slides.");
     }
 
-    console.warn("⚠️ Switching to Local AI...");
-    try {
-        const res = await fetch(LOCAL_AI_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt, max_tokens: 2048 })
-        });
-        const localData = await res.json();
-        const jsonMatch = localData.response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const output = JSON.parse(jsonMatch[0]);
+    const validSlides = raw.slides
+        .filter((s: any) => s && typeof s.title === 'string' && s.title.trim().length > 0)
+        .map((s: any) => {
+            const contentItems = (Array.isArray(s.content) ? s.content : (s.content ? [s.content] : []))
+                .filter((c: any) => typeof c === 'string' && c.trim().length > 0)
+                .map((c: any) => c.trim());
             return {
-                title: output.title || input.topic,
-                slides: output.slides.map((s: any) => ({ ...s, imageDataUri: "" }))
+                title: s.title.trim(),
+                content: contentItems,
+                speakerNotes: typeof s.speakerNotes === 'string' ? s.speakerNotes.trim() : '',
+                imageDataUri: ''
             };
-        }
-    } catch (e) {
-        console.error("❌ Local AI failed:", e);
+        })
+        .filter((s: any) => s.content.length > 0);
+
+    if (validSlides.length === 0) {
+        throw new Error("AI generation produced malformed or empty presentation slides. Please retry generation.");
     }
 
-    throw new Error("AI Down. Check .env.local and ai_server.py.");
+    return {
+        title: typeof raw.title === 'string' && raw.title.trim().length > 0 ? raw.title.trim() : input.topic,
+        slides: validSlides
+    };
 }
