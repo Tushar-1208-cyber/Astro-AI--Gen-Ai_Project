@@ -98,14 +98,13 @@ export default function VideoGeneratorPage() {
     setGeneratedVideo(null);
 
     try {
-      const token = await user.getIdToken();
       const result = await generateVideoAction({
         prompt,
         duration,
         aspectRatio: aspectRatio as "16:9" | "9:16" | "1:1",
         style: style as "realistic" | "cinematic" | "animated" | "artistic",
         quality: quality as "standard" | "high" | "ultra",
-      }, token);
+      });
 
       if (result.success && result.data) {
         const video: GeneratedVideo = {
@@ -207,7 +206,7 @@ export default function VideoGeneratorPage() {
       const videoUrl = URL.createObjectURL(file);
       setUploadedVideo(videoUrl);
       
-      const mockVideo: GeneratedVideo = {
+      const uploadedVideoRecord: GeneratedVideo = {
         id: `uploaded_${Date.now()}`,
         url: videoUrl,
         prompt: `Uploaded: ${file.name}`,
@@ -216,7 +215,7 @@ export default function VideoGeneratorPage() {
         createdAt: new Date(),
       };
 
-      setGeneratedVideo(mockVideo);
+      setGeneratedVideo(uploadedVideoRecord);
       toast({
         title: "Video Uploaded",
         description: `Video uploaded successfully! Format: ${getVideoFormat(file.name)}`,
