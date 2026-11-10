@@ -36,22 +36,18 @@ export default function MentoringPage() {
   useEffect(() => {
     async function fetchStudents() {
       setIsStudentListLoading(true);
-      const result = await getStudentsAction(); // Bypass token for testing
-      if (result.success && result.data && result.data.length > 0) {
+      const result = await getStudentsAction();
+      if (result.success && result.data) {
         setStudents(result.data);
+      } else if (!result.success) {
+        setStudents([]);
+        toast({
+          title: "Error Loading Students",
+          description: result.error || "Failed to load student roster.",
+          variant: "destructive",
+        });
       } else {
-        // Fallback: Get names from grades if roster is empty
-        const gradesResult = await getGradesAction(); // Bypass token for testing
-        if (gradesResult.success && gradesResult.data) {
-           const uniqueStudentNames = Array.from(new Set(gradesResult.data.map(g => g.studentName)));
-           const fallbackStudents = uniqueStudentNames.map((name, index) => ({
-             id: `fallback-${index}`,
-             name: name,
-             uid: 'mock-id',
-             gradeLevel: 8
-           }));
-           setStudents(fallbackStudents as any);
-        }
+        setStudents([]);
       }
       setIsStudentListLoading(false);
     }
@@ -74,9 +70,18 @@ export default function MentoringPage() {
     setGradeAnalysis(null);
     
     try {
-      const gradesResult = await getGradesAction(); // Bypass token
+      const gradesResult = await getGradesAction();
+      if (!gradesResult.success) {
+        toast({
+          title: "Grade Analysis Failed",
+          description: gradesResult.error || "Failed to analyze student grades.",
+          variant: "destructive",
+        });
+        setIsAnalyzingGrades(false);
+        return;
+      }
       
-      if (gradesResult.success && gradesResult.data) {
+      if (gradesResult.data) {
         const searchName = studentName.trim().toLowerCase();
         const studentGrades = gradesResult.data.filter(grade => 
           grade.studentName.trim().toLowerCase() === searchName
@@ -163,7 +168,16 @@ export default function MentoringPage() {
 
     try {
       // Fetch grade data for the selected student
-      const gradesResult = await getGradesAction(); // Bypass token
+      const gradesResult = await getGradesAction();
+      if (!gradesResult.success) {
+        toast({
+          title: "Grade Lookup Failed",
+          description: gradesResult.error || "Failed to retrieve student grades.",
+          variant: "destructive",
+        });
+        setIsLoading(false);
+        return;
+      }
       
       let gradeData: any[] = [];
       let gradeAnalysis = {
@@ -174,7 +188,7 @@ export default function MentoringPage() {
         totalGrades: 0
       };
 
-      if (gradesResult.success && gradesResult.data) {
+      if (gradesResult.data) {
         // Filter grades for the selected student
         const searchName = selectedStudent.name.trim().toLowerCase();
         const studentGrades = gradesResult.data.filter(grade => 
@@ -236,9 +250,14 @@ export default function MentoringPage() {
         }
       }
 
+      // Determine grade level from student's grade records (className) or default to 8
+      const parsedGradeLevel = gradeData && gradeData.length > 0 && gradeData[0].className
+        ? (parseInt(gradeData[0].className, 10) || 8)
+        : 8;
+
       const result = await createMentorshipPlanAction({
         studentName: selectedStudent.name,
-        gradeLevel: selectedStudent.gradeLevel || 8,
+        gradeLevel: parsedGradeLevel,
         problems,
         progress,
         gradeData,
