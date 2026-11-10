@@ -56,19 +56,27 @@ export default function DiscussionGeneratorPage() {
     setIsLoading(true);
     setDiscussionMaterials(null);
 
-    const result = await generateDiscussionAction({ topic, gradeLevel, language });
+    try {
+      const result = await generateDiscussionAction({ topic, gradeLevel, language });
 
-    if (result.success && result.data) {
-      setDiscussionMaterials(result.data);
-    } else {
+      if (result.success && result.data) {
+        setDiscussionMaterials(result.data);
+      } else {
+        toast({
+          title: "Error Generating Discussion",
+          description: 'error' in result ? result.error : "An unknown error occurred.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error Generating Discussion",
-        description: 'error' in result ? result.error : "An unknown error occurred.",
+        description: error instanceof Error ? error.message : "Failed to generate discussion materials. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (
