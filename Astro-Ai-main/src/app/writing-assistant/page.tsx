@@ -161,8 +161,8 @@ export default function WritingAssistantPage() {
                 {result.suggestions.length > 0 ? (
                   result.suggestions.map((suggestion, index) => (
                     <div key={index} className="p-4 border rounded-lg bg-background">
-                      <p className="text-xs text-muted-foreground italic">Original: "{suggestion.original}"</p>
-                      <p className="font-semibold text-primary">Suggestion: "{suggestion.suggestion}"</p>
+                      <p className="text-xs text-muted-foreground italic">Original: &quot;{suggestion.original}&quot;</p>
+                      <p className="font-semibold text-primary">Suggestion: &quot;{suggestion.suggestion}&quot;</p>
                       <p className="text-sm text-muted-foreground mt-1">{suggestion.explanation}</p>
                     </div>
                   ))
