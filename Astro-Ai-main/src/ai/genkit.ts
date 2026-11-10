@@ -1,8 +1,9 @@
 import { genkit } from 'genkit';
 import { chroma } from 'genkitx-chromadb';
-import { googleAI } from '@genkit-ai/googleai';
+import { googleAI, textEmbedding004 } from '@genkit-ai/googleai';
+import { callLocalAI } from './local-ai';
 
-const AI_SERVER_URL = 'http://localhost:8000/generate';
+const apiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY;
 
 /**
  * Astro AI Genkit Configuration
@@ -10,16 +11,13 @@ const AI_SERVER_URL = 'http://localhost:8000/generate';
 export const ai = genkit({
   plugins: [
     googleAI({ 
-      apiKey: process.env.GOOGLE_GENAI_API_KEY,
-      apiVersion: 'v1'
+      apiKey: apiKey || 'NO_KEY_PROVIDED',
+      apiVersion: 'v1beta'
     }),
     chroma([
       {
         collectionName: 'codebase-collection',
-        embedder: {
-            name: 'placeholder-embedder',
-            async embed() { return [new Array(384).fill(0)]; }
-        },
+        embedder: textEmbedding004,
         clientParams: {
           path: process.env.CHROMA_URL || 'http://localhost:8001',
         }
@@ -28,42 +26,24 @@ export const ai = genkit({
   ],
 });
 
-// Defining the model formally with a very strict return type
+// Defining the local model formally as a registered Genkit model
 export const localModel = ai.defineModel(
   {
     name: 'astro-finetuned',
     label: 'Astro Fine-tuned Model',
   },
   async (input) => {
-    const prompt = input.messages[input.messages.length - 1].content[0].text || "";
+    const lastMessage = input.messages[input.messages.length - 1];
+    const prompt = lastMessage?.content?.find((c: any) => c.text)?.text || "";
     
-    try {
-      const response = await fetch(AI_SERVER_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: prompt,
-          max_tokens: 1024,
-          temperature: 0.7,
-        }),
-      });
-
-      const data = await response.json();
-      console.log("📝 [Local AI Output]:", data.response.substring(0, 200) + "...");
-      
-      return {
-        message: {
-          role: 'assistant',
-          content: [{ text: data.response }],
-        }
-      };
-    } catch (error) {
-      return {
-        message: {
-          role: 'assistant',
-          content: [{ text: "AI Server connection failed. Please ensure py -3.12 ai_server.py is running." }],
-        }
-      };
-    }
+    const textOutput = await callLocalAI(prompt, 1024);
+    
+    return {
+      message: {
+        role: 'model' as const,
+        content: [{ text: textOutput }],
+      }
+    };
   }
 );
+
