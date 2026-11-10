@@ -49,11 +49,11 @@ export default function WorksheetCreatorPage() {
 
     const result = await createWorksheetAction({ topic, gradeLevel, numQuestions });
 
-    if (result.success && result.data) {
+    if (!result.success) {
+      toast({ title: 'Error', description: result.error || 'Failed to generate.', variant: 'destructive' });
+    } else {
       setWorksheet(result.data);
       toast({ title: "Worksheet Ready!", description: `Generated ${result.data.questions.length} questions.` });
-    } else {
-      toast({ title: 'Error', description: result.error || 'Failed to generate.', variant: 'destructive' });
     }
     setIsLoading(false);
   };
@@ -67,6 +67,12 @@ export default function WorksheetCreatorPage() {
     const result = await textToSpeechAction({ text });
     if (result.success && result.data) {
         setAudioSrc(result.data.audioDataUri);
+    } else {
+        toast({
+            title: "Audio Playback Failed",
+            description: ('error' in result && result.error) ? result.error : "Text-to-speech audio is unavailable.",
+            variant: "destructive"
+        });
     }
     setIsAudioLoading(null);
   };
