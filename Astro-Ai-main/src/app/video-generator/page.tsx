@@ -462,7 +462,7 @@ export default function VideoGeneratorPage() {
                 <div>
                   <Video className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
                   <p>Your generated video will appear here.</p>
-                  <p className="text-sm mt-2">Configure settings and click "Generate Video" to start.</p>
+                  <p className="text-sm mt-2">Configure settings and click &quot;Generate Video&quot; to start.</p>
                 </div>
               </div>
             )}
