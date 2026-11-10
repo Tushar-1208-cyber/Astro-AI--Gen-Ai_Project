@@ -51,19 +51,27 @@ export default function QrCodeGeneratorPage() {
     setIsLoading(true);
     setQrCodeDataUri(null);
 
-    const result = await generateQrCodeAction({ answerKey });
+    try {
+      const result = await generateQrCodeAction({ answerKey });
 
-    if (result.success && result.data) {
-      setQrCodeDataUri(result.data.qrCodeDataUri);
-    } else {
+      if (!result.success) {
+        toast({
+          title: "Error",
+          description: result.error || "Failed to generate QR code.",
+          variant: "destructive",
+        });
+      } else {
+        setQrCodeDataUri(result.data.qrCodeDataUri);
+      }
+    } catch (error) {
       toast({
         title: "Error",
-        description: result.error || "Failed to generate QR code.",
+        description: error instanceof Error ? error.message : "Failed to generate QR code. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   const handleDownload = () => {
