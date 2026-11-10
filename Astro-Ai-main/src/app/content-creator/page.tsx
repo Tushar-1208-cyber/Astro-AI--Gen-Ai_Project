@@ -68,16 +68,6 @@ export default function ContentCreatorPage() {
 
     const languages = selectedLanguages.map(lang => lang.value).join(',');
 
-    // Debug logging
-    console.log('Validation check:', {
-      prompt: prompt.trim(),
-      promptLength: prompt.trim().length,
-      selectedLanguages: selectedLanguages,
-      selectedLanguagesLength: selectedLanguages.length,
-      contentType: contentType.trim(),
-      contentTypeLength: contentType.trim().length
-    });
-
     if (!prompt.trim() || selectedLanguages.length === 0 || !contentType.trim()) {
       toast({
         title: "Missing Information",
@@ -90,19 +80,27 @@ export default function ContentCreatorPage() {
     setIsLoading(true);
     setGeneratedContent(null);
 
-    const result = await generateLocalizedContentAction({ prompt, languages, contentType, gradeLevel });
+    try {
+      const result = await generateLocalizedContentAction({ prompt, languages, contentType, gradeLevel });
 
-    if (result.success && result.data) {
-      setGeneratedContent(result.data);
-    } else {
+      if (result.success && result.data) {
+        setGeneratedContent(result.data);
+      } else {
+        toast({
+          title: "Error",
+          description: 'error' in result ? result.error : "Failed to generate content.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error",
-        description: 'error' in result ? result.error : "Failed to generate content.",
+        description: error instanceof Error ? error.message : "Failed to generate content. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
   
   const handleContentChange = (lang: string, newText: string) => {
