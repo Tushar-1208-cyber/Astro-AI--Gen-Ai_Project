@@ -41,14 +41,19 @@ export default function StudentRosterPage() {
       }
 
       setIsLoading(true);
-      const result = await getStudentsAction();
-      if (result.success && result.data) {
-        setStudents(result.data);
-        setLastFetchTime(now);
-      } else {
-        toast({ title: "Error", description: result.error || "Could not load students.", variant: "destructive" });
+      try {
+        const result = await getStudentsAction();
+        if (result.success && result.data) {
+          setStudents(result.data);
+          setLastFetchTime(now);
+        } else {
+          toast({ title: "Error", description: result.error || "Could not load students.", variant: "destructive" });
+        }
+      } catch (error) {
+        toast({ title: "Error", description: error instanceof Error ? error.message : "Could not load students.", variant: "destructive" });
+      } finally {
+        setIsLoading(false);
       }
-      setIsLoading(false);
     }
     fetchStudents();
   }, [authStatus, user]); // Only fetch when auth status or user changes
@@ -78,19 +83,24 @@ export default function StudentRosterPage() {
     }
 
     setIsSubmitting(true);
-    const addResult = await addStudentAction({ name: newStudentName, photoDataUri: newStudentPhoto });
-    
-    if (addResult.success && addResult.data) {
-      setStudents(addResult.data);
-      setLastFetchTime(Date.now()); // Update cache time
-      setNewStudentName('');
-      setNewStudentPhoto(null);
-      setNewStudentFileName('');
-      toast({ title: "Success", description: "Student added to the roster." });
-    } else {
-      toast({ title: "Error", description: addResult.error || "Failed to add student.", variant: "destructive" });
+    try {
+      const addResult = await addStudentAction({ name: newStudentName, photoDataUri: newStudentPhoto });
+      
+      if (addResult.success && addResult.data) {
+        setStudents(addResult.data);
+        setLastFetchTime(Date.now()); // Update cache time
+        setNewStudentName('');
+        setNewStudentPhoto(null);
+        setNewStudentFileName('');
+        toast({ title: "Success", description: "Student added to the roster." });
+      } else {
+        toast({ title: "Error", description: addResult.error || "Failed to add student.", variant: "destructive" });
+      }
+    } catch (error) {
+      toast({ title: "Error", description: error instanceof Error ? error.message : "Failed to add student.", variant: "destructive" });
+    } finally {
+      setIsSubmitting(false);
     }
-    setIsSubmitting(false);
   };
   
   const handleDeleteStudent = async (id: string) => {
@@ -98,14 +108,19 @@ export default function StudentRosterPage() {
     const originalStudents = [...students];
     setStudents(students.filter(s => s.id !== id)); // Optimistic UI update
     
-    const deleteResult = await deleteStudentAction(id);
-    if(deleteResult.success && deleteResult.data) {
-      toast({ title: "Success", description: "Student removed." });
-      setStudents(deleteResult.data);
-      setLastFetchTime(Date.now()); // Update cache time
-    } else {
-       toast({ title: "Error", description: deleteResult.error || "Failed to remove student.", variant: "destructive" });
-       setStudents(originalStudents); // Revert on failure
+    try {
+      const deleteResult = await deleteStudentAction(id);
+      if(deleteResult.success && deleteResult.data) {
+        toast({ title: "Success", description: "Student removed." });
+        setStudents(deleteResult.data);
+        setLastFetchTime(Date.now()); // Update cache time
+      } else {
+        toast({ title: "Error", description: deleteResult.error || "Failed to remove student.", variant: "destructive" });
+        setStudents(originalStudents); // Revert on failure
+      }
+    } catch (error) {
+      toast({ title: "Error", description: error instanceof Error ? error.message : "Failed to remove student.", variant: "destructive" });
+      setStudents(originalStudents);
     }
   };
 
