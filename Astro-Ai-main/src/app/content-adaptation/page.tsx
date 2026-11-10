@@ -31,19 +31,27 @@ export default function ContentAdaptationPage() {
     setIsLoading(true);
     setAdaptedContent(null);
 
-    const result = await adaptContentAction({ content, gradeLevel });
+    try {
+      const result = await adaptContentAction({ content, gradeLevel });
 
-    if (result.success && result.data) {
-      setAdaptedContent(result.data.adaptedContent);
-    } else {
+      if (result.success && result.data) {
+        setAdaptedContent(result.data.adaptedContent);
+      } else {
+        toast({
+          title: "Error",
+          description: 'error' in result ? result.error : "Failed to adapt content.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error",
-        description: 'error' in result ? result.error : "Failed to adapt content.",
+        description: error instanceof Error ? error.message : "Failed to adapt content. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (
