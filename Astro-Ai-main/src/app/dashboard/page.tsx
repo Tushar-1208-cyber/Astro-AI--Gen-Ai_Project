@@ -69,6 +69,14 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
+  const toValidDate = (d: any): Date => {
+    if (d instanceof Date) return d;
+    if (typeof d === 'string' || typeof d === 'number') return new Date(d);
+    if (d && typeof d.toDate === 'function') return d.toDate();
+    if (d && typeof d._seconds === 'number') return new Date(d._seconds * 1000);
+    return new Date();
+  };
+
   const fetchDashboardData = async () => {
     if (authStatus !== 'authenticated' || !user) {
       setIsLoading(false);
@@ -77,10 +85,9 @@ export default function DashboardPage() {
 
     try {
       setIsLoading(true);
-      const token = await user.getIdToken();
 
       // Fetch all dashboard data in one optimized call
-      const result = await getDashboardStatsAction(token);
+      const result = await getDashboardStatsAction();
 
       if (result.success && result.data) {
         const { 
@@ -109,7 +116,7 @@ export default function DashboardPage() {
         
         // Add recent grades
         const recentGrades = grades
-          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+          .sort((a, b) => toValidDate(b.date).getTime() - toValidDate(a.date).getTime())
           .slice(0, 3);
         
         recentGrades.forEach(grade => {
@@ -117,7 +124,7 @@ export default function DashboardPage() {
             id: grade.id,
             type: 'grade' as const,
             title: `Grade recorded for ${grade.studentName} - ${grade.subject}`,
-            date: new Date(grade.date),
+            date: toValidDate(grade.date),
             icon: BarChart3,
             color: 'text-green-600'
           });
@@ -126,14 +133,14 @@ export default function DashboardPage() {
         // Add recent events
         const recentEvents = events
           .sort((a, b) => {
-            const dateA = a.date instanceof Date ? a.date : a.date.toDate();
-            const dateB = b.date instanceof Date ? b.date : b.date.toDate();
+            const dateA = toValidDate(a.date);
+            const dateB = toValidDate(b.date);
             return dateB.getTime() - dateA.getTime();
           })
           .slice(0, 2);
         
         recentEvents.forEach(event => {
-          const eventDate = event.date instanceof Date ? event.date : event.date.toDate();
+          const eventDate = toValidDate(event.date);
           recentActivity.push({
             id: event.id,
             type: 'event' as const,
@@ -147,18 +154,18 @@ export default function DashboardPage() {
         // Add recent recordings
         const recentRecordings = recordings
           .sort((a, b) => {
-            const dateA = a.createdAt instanceof Date ? a.createdAt : a.createdAt.toDate();
-            const dateB = b.createdAt instanceof Date ? b.createdAt : b.createdAt.toDate();
+            const dateA = toValidDate(a.createdAt);
+            const dateB = toValidDate(b.createdAt);
             return dateB.getTime() - dateA.getTime();
           })
           .slice(0, 2);
         
         recentRecordings.forEach(recording => {
-          const recordingDate = recording.createdAt instanceof Date ? recording.createdAt : recording.createdAt.toDate();
+          const recordingDate = toValidDate(recording.createdAt);
           recentActivity.push({
             id: recording.id,
             type: 'recording' as const,
-            title: `Recording: ${recording.name}`,
+            title: `Recording: ${(recording as any).title || (recording as any).name || 'Class Session'}`,
             date: recordingDate,
             icon: Video,
             color: 'text-purple-600'
@@ -269,7 +276,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-3xl font-bold font-headline">Dashboard</h1>
           <p className="text-muted-foreground">
-            Welcome back! Here's an overview of your teaching activities.
+            Welcome back! Here&apos;s an overview of your teaching activities.
           </p>
         </div>
         <div className="flex items-center gap-2">
