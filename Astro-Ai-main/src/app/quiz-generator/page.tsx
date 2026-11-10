@@ -66,19 +66,27 @@ export default function QuizGeneratorPage() {
     setUserAnswers({});
     setShowResults(false);
 
-    const result = await generateQuizAction({ topic, numQuestions, quizType });
+    try {
+      const result = await generateQuizAction({ topic, numQuestions, quizType });
 
-    if (result.success && result.data) {
-      setQuiz(result.data as GenerateQuizOutput);
-    } else {
+      if (result.success && result.data) {
+        setQuiz(result.data as GenerateQuizOutput);
+      } else {
+        toast({
+          title: 'Error Generating Quiz',
+          description: 'error' in result ? result.error : 'An unknown error occurred.',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
       toast({
         title: 'Error Generating Quiz',
-        description: 'error' in result ? result.error : 'An unknown error occurred.',
+        description: error instanceof Error ? error.message : 'Failed to generate quiz. Please try again.',
         variant: 'destructive',
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   const handleAnswerChange = (index: number, answer: string) => {
