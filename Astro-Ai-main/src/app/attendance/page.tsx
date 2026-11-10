@@ -27,13 +27,21 @@ export default function AttendancePage() {
 
   useEffect(() => {
     async function fetchStudents() {
-      const result = await getStudentsAction();
-      if (result.success && result.data) {
-        setAllStudents(result.data.map((s: any) => ({ id: s.id, name: s.name })));
-      } else if (!result.success) {
+      try {
+        const result = await getStudentsAction();
+        if (result.success && result.data) {
+          setAllStudents(result.data.map((s: any) => ({ id: s.id, name: s.name })));
+        } else if (!result.success) {
+          toast({
+            title: "Roster Error",
+            description: result.error || "Failed to load student roster.",
+            variant: "destructive"
+          });
+        }
+      } catch (error) {
         toast({
           title: "Roster Error",
-          description: result.error || "Failed to load student roster.",
+          description: error instanceof Error ? error.message : "Failed to load student roster.",
           variant: "destructive"
         });
       }
@@ -62,51 +70,69 @@ export default function AttendancePage() {
     if (!videoRef.current || !canvasRef.current || !user) return;
 
     setIsLoading(true);
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext('2d');
-    context?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d');
+      context?.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const photoDataUri = canvas.toDataURL('image/jpeg');
-    setLastPhoto(photoDataUri);
-    
-    const result = await recognizeStudentsAction({ photoDataUri });
+      const photoDataUri = canvas.toDataURL('image/jpeg');
+      setLastPhoto(photoDataUri);
+      
+      const result = await recognizeStudentsAction({ photoDataUri });
 
-    if (result.success && 'data' in result) {
-      const recognizedNames = result.data.presentStudents;
-      const newAttendance: Record<string, boolean> = { ...attendance };
-      allStudents.forEach(s => {
-        if (recognizedNames.includes(s.name)) {
-          newAttendance[s.id] = true;
-        }
-      });
-      setAttendance(newAttendance);
-      toast({ title: "Scan Complete", description: `${recognizedNames.length} students recognized.` });
-    } else {
+      if (result.success && 'data' in result) {
+        const recognizedNames = result.data.presentStudents;
+        const newAttendance: Record<string, boolean> = { ...attendance };
+        allStudents.forEach(s => {
+          if (recognizedNames.includes(s.name)) {
+            newAttendance[s.id] = true;
+          }
+        });
+        setAttendance(newAttendance);
+        toast({ title: "Scan Complete", description: `${recognizedNames.length} students recognized.` });
+      } else {
+        toast({
+          title: "Recognition Failed",
+          description: ('error' in result && result.error) ? result.error : "Failed to recognize students from the photo.",
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
       toast({
         title: "Recognition Failed",
-        description: ('error' in result && result.error) ? result.error : "Failed to recognize students from the photo.",
+        description: error instanceof Error ? error.message : "Failed to recognize students from the photo.",
         variant: "destructive"
       });
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const handleSubmit = async () => {
     setIsSubmitting(true);
-    const presentNames = allStudents.filter(s => attendance[s.id]).map(s => s.name);
-    
-    const result = await submitAttendanceAction(presentNames, lastPhoto);
-    
-    if (result.success) {
-      toast({ title: "Success", description: "Attendance submitted successfully!" });
-      setAttendance({}); 
-    } else {
-      toast({ title: "Error", description: result.error, variant: "destructive" });
+    try {
+      const presentNames = allStudents.filter(s => attendance[s.id]).map(s => s.name);
+      
+      const result = await submitAttendanceAction(presentNames, lastPhoto);
+      
+      if (result.success) {
+        toast({ title: "Success", description: "Attendance submitted successfully!" });
+        setAttendance({}); 
+      } else {
+        toast({ title: "Error", description: result.error || "Failed to submit attendance.", variant: "destructive" });
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to submit attendance.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsSubmitting(false);
     }
-    setIsSubmitting(false);
   };
 
   const toggleAttendance = (id: string) => {
