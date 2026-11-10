@@ -1,1 +1,6 @@
-// This file is deleted. The functionality is replaced by /src/ai/flows/generate-localized-content.ts
+'use server';
+
+/**
+ * Legacy alias for generateLocalizedContent
+ */
+export { generateLocalizedContent as generateMultiLanguageContent } from './generate-localized-content';
