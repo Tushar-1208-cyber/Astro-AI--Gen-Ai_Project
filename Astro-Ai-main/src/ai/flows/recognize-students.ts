@@ -7,6 +7,7 @@
  */
 
 import { ai } from '@/ai/genkit';
+import { assertCapability } from '../provider';
 import {
     RecognizeStudentsInputSchema,
     RecognizeStudentsOutputSchema,
@@ -28,15 +29,27 @@ const prompt = ai.definePrompt({
 });
 
 export async function recognizeStudents(input: RecognizeStudentsInputWithRoster): Promise<RecognizeStudentsOutput> {
-  let retries = 3;
+  assertCapability('multimodal-vision');
+
+  if (!input.photoDataUri || input.photoDataUri.trim().length < 10) {
+    throw new Error("Invalid or empty photo data provided for student facial recognition.");
+  }
+
+  let retries = 2;
   while (retries > 0) {
     try {
       const { output } = await prompt(input);
-      return output!;
+      if (output && Array.isArray(output.presentStudents)) {
+        return RecognizeStudentsOutputSchema.parse(output);
+      }
+      throw new Error("No output returned from recognition model.");
     } catch (error: any) {
+      if (error.name === 'UnsupportedCapabilityError') {
+        throw error;
+      }
       if (error.message?.includes('429') || error.message?.includes('quota')) {
-        console.log(`⚠️ Attendance Quota hit. Waiting 15s... (Attempts left: ${retries})`);
-        await new Promise(r => setTimeout(r, 15000));
+        console.log(`⚠️ Attendance Quota hit. Waiting 5s... (Attempts left: ${retries})`);
+        await new Promise(r => setTimeout(r, 5000));
         retries--;
       } else {
         throw error;
@@ -44,8 +57,5 @@ export async function recognizeStudents(input: RecognizeStudentsInputWithRoster)
     }
   }
 
-  console.log("⚠️ AI Recognition failed completely. Falling back to manual mode.");
-  return {
-    presentStudents: input.studentRoster.map(s => s.name)
-  };
+  throw new Error("Automated facial recognition was unable to identify students from the provided photo. Please take roll call manually or retry with a clearer photo.");
 }
