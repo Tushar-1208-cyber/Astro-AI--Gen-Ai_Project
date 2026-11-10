@@ -58,18 +58,27 @@ export default function LessonPlannerPage() {
     setIsLoading(true);
     setLessonPlan(null);
 
-    const result = await createLessonPlanAction({ topic, gradeLevel, durationInMinutes, learningObjectives, language });
+    try {
+      const result = await createLessonPlanAction({ topic, gradeLevel, durationInMinutes, learningObjectives, language });
 
-    if (result.success && result.data) {
-      setLessonPlan(result.data);
-    } else {
+      if (result.success && result.data) {
+        setLessonPlan(result.data);
+      } else {
+        toast({
+          title: "Error Generating Lesson Plan",
+          description: 'error' in result ? result.error : "An unknown error occurred.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error Generating Lesson Plan",
-        description: 'error' in result ? result.error : "An unknown error occurred.",
+        description: error instanceof Error ? error.message : "Failed to generate lesson plan. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const handleShare = () => {
