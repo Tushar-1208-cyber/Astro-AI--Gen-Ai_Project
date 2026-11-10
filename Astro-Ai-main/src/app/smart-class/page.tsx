@@ -148,13 +148,18 @@ function ClassRecordings() {
   useEffect(() => {
     async function fetchRecordings() {
       setIsLoading(true);
-      const result = await getRecordingsAction();
-      if (result.success) {
-        setRecordings(result.data || []);
-      } else {
-        toast({ title: "Error", description: "Could not fetch recordings.", variant: "destructive" });
+      try {
+        const result = await getRecordingsAction();
+        if (result.success) {
+          setRecordings(result.data || []);
+        } else {
+          toast({ title: "Error", description: result.error || "Could not fetch recordings.", variant: "destructive" });
+        }
+      } catch (error) {
+        toast({ title: "Error", description: error instanceof Error ? error.message : "Could not fetch recordings.", variant: "destructive" });
+      } finally {
+        setIsLoading(false);
       }
-      setIsLoading(false);
     }
     if (authStatus === 'authenticated') {
         fetchRecordings();
@@ -174,19 +179,26 @@ function ClassRecordings() {
     const reader = new FileReader();
     reader.readAsDataURL(selectedFile);
     reader.onloadend = async () => {
-        const dataUrl = reader.result as string;
-        const result = await addRecordingAction({
-            name: selectedFile.name,
-            dataUrl: dataUrl,
-        });
-        if (result.success) {
-            setRecordings(result.data || []);
-            setSelectedFile(null);
-            toast({ title: "Success", description: "Recording uploaded." });
-        } else {
-            toast({ title: "Error", description: result.error, variant: "destructive" });
+        try {
+            const dataUrl = reader.result as string;
+            const result = await addRecordingAction({
+                title: selectedFile.name,
+                videoUrl: dataUrl,
+                thumbnailUrl: '',
+                duration: '0:00',
+            });
+            if (result.success) {
+                setRecordings(result.data || []);
+                setSelectedFile(null);
+                toast({ title: "Success", description: "Recording uploaded." });
+            } else {
+                toast({ title: "Error", description: result.error || "Failed to upload recording.", variant: "destructive" });
+            }
+        } catch (error) {
+            toast({ title: "Error", description: error instanceof Error ? error.message : "Failed to upload recording.", variant: "destructive" });
+        } finally {
+            setIsUploading(false);
         }
-        setIsUploading(false);
     }
   };
   
@@ -194,15 +206,20 @@ function ClassRecordings() {
     const originalRecordings = [...recordings];
     setRecordings(prev => prev.filter(r => r.id !== id));
 
-    const result = await deleteRecordingAction(id);
-    if (result.success) {
-      setRecordings(result.data || []);
-      toast({ title: "Success", description: "Recording deleted." });
-    } else {
+    try {
+      const result = await deleteRecordingAction(id);
+      if (result.success) {
+        setRecordings(result.data || []);
+        toast({ title: "Success", description: "Recording deleted." });
+      } else {
+        setRecordings(originalRecordings);
+        toast({ title: "Error", description: result.error || "Failed to delete recording.", variant: "destructive" });
+      }
+    } catch (error) {
       setRecordings(originalRecordings);
-      toast({ title: "Error", description: result.error, variant: "destructive" });
+      toast({ title: "Error", description: error instanceof Error ? error.message : "Failed to delete recording.", variant: "destructive" });
     }
-  }
+  };
 
   return (
     <div className="space-y-8">
@@ -229,11 +246,11 @@ function ClassRecordings() {
           {recordings.map((video) => (
             <Card key={video.id} className="overflow-hidden flex flex-col group">
               <div className="relative w-full aspect-video bg-black">
-                  <video controls src={video.dataUrl} className="w-full h-full" />
+                  <video controls src={video.videoUrl} className="w-full h-full" />
               </div>
               <CardHeader className="flex flex-row items-center justify-between">
                   <CardTitle className="font-headline text-lg flex items-center gap-2">
-                      <VideoIcon /> {video.name}
+                      <VideoIcon /> {video.title}
                   </CardTitle>
                   <Button variant="ghost" size="icon" className="opacity-0 group-hover:opacity-100" onClick={() => handleDelete(video.id)}>
                       <Trash2 className="w-4 h-4 text-destructive" />
@@ -272,18 +289,26 @@ function AIVideoSearch() {
     }
     setIsLoading(true);
     
-    const actionResult = await searchYoutubeVideosAction({ grade, subject, topic, language });
-    if(actionResult.success) {
-      window.open(actionResult.data.searchUrl, '_blank');
-    } else {
+    try {
+      const actionResult = await searchYoutubeVideosAction({ grade, subject, topic, language });
+      if(actionResult.success) {
+        window.open(actionResult.data.searchUrl, '_blank');
+      } else {
+        toast({
+          title: "AI Search Failed",
+          description: actionResult.error,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
       toast({
         title: "AI Search Failed",
-        description: actionResult.error,
+        description: error instanceof Error ? error.message : "Failed to search educational videos. Please try again.",
         variant: "destructive"
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
   
   const subjects = ['Math', 'Science', 'English', 'History', 'Physics', 'Chemistry', 'Biology'];
