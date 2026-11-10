@@ -28,7 +28,7 @@ export type ClassRecording = {
     uid: string;
     title: string;
     videoUrl: string;
-    thumbnailUrl: string;
-    duration: string;
-    createdAt: Date;
+    thumbnailUrl?: string;
+    duration?: string;
+    createdAt?: Date;
 };
