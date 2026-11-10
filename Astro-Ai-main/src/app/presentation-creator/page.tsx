@@ -73,19 +73,27 @@ export default function PresentationCreatorPage() {
     setIsLoading(true);
     setPresentation(null);
 
-    const result = await createPresentationAction({ topic, numSlides, additionalInstructions });
+    try {
+      const result = await createPresentationAction({ topic, numSlides, additionalInstructions });
 
-    if (result.success && result.data) {
-      setPresentation(result.data);
-    } else {
+      if (result.success && result.data) {
+        setPresentation(result.data);
+      } else {
+        toast({
+          title: "Error Generating Presentation",
+          description: 'error' in result ? result.error : "An unknown error occurred.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error Generating Presentation",
-        description: 'error' in result ? result.error : "An unknown error occurred.",
+        description: error instanceof Error ? error.message : "Failed to generate presentation. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
   
   const handleSlideChange = (slideIndex: number, field: string, value: string | string[], pointIndex?: number) => {
