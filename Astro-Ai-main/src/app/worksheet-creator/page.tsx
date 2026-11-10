@@ -47,15 +47,24 @@ export default function WorksheetCreatorPage() {
     setIsLoading(true);
     setWorksheet(null);
 
-    const result = await createWorksheetAction({ topic, gradeLevel, numQuestions });
+    try {
+      const result = await createWorksheetAction({ topic, gradeLevel, numQuestions });
 
-    if (!result.success) {
-      toast({ title: 'Error', description: result.error || 'Failed to generate.', variant: 'destructive' });
-    } else {
-      setWorksheet(result.data);
-      toast({ title: "Worksheet Ready!", description: `Generated ${result.data.questions.length} questions.` });
+      if (!result.success) {
+        toast({ title: 'Error', description: result.error || 'Failed to generate.', variant: 'destructive' });
+      } else {
+        setWorksheet(result.data);
+        toast({ title: "Worksheet Ready!", description: `Generated ${result.data.questions.length} questions.` });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to generate worksheet. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const handlePrint = () => {
@@ -64,17 +73,26 @@ export default function WorksheetCreatorPage() {
 
   const handlePlayAudio = async (text: string, index: number) => {
     setIsAudioLoading(index);
-    const result = await textToSpeechAction({ text });
-    if (result.success && result.data) {
+    try {
+      const result = await textToSpeechAction({ text });
+      if (result.success && result.data) {
         setAudioSrc(result.data.audioDataUri);
-    } else {
+      } else {
         toast({
-            title: "Audio Playback Failed",
-            description: ('error' in result && result.error) ? result.error : "Text-to-speech audio is unavailable.",
-            variant: "destructive"
+          title: "Audio Playback Failed",
+          description: ('error' in result && result.error) ? result.error : "Text-to-speech audio is unavailable.",
+          variant: "destructive"
         });
+      }
+    } catch (error) {
+      toast({
+        title: "Audio Playback Failed",
+        description: error instanceof Error ? error.message : "Text-to-speech audio is unavailable.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAudioLoading(null);
     }
-    setIsAudioLoading(null);
   };
   
   const renderQuestionInput = (q: any, index: number) => {
