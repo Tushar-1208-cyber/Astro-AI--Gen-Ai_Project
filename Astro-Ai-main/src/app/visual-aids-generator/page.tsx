@@ -51,19 +51,27 @@ export default function VisualAidsGeneratorPage() {
     setIsLoading(true);
     setImageDataUri(null);
 
-    const result = await generateVisualAidAction({ prompt });
+    try {
+      const result = await generateVisualAidAction({ prompt });
 
-    if (result.success && result.data) {
-      setImageDataUri(result.data.imageDataUri);
-    } else {
+      if (result.success && result.data) {
+        setImageDataUri(result.data.imageDataUri);
+      } else {
+        toast({
+          title: "Error Generating Image",
+          description: 'error' in result ? result.error : "An unknown error occurred.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error Generating Image",
-        description: 'error' in result ? result.error : "An unknown error occurred.",
+        description: error instanceof Error ? error.message : "Failed to generate visual aid. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   const handleDownload = () => {
