@@ -18,6 +18,7 @@ type Question = {
 };
 
 export default function PhotoToWorksheetPage() {
+  const { toast } = useToast();
   const [photoDataUri, setPhotoDataUri] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>("");
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -79,39 +80,47 @@ export default function PhotoToWorksheetPage() {
     setIsLoading(true);
     setQuestions([]);
 
-    const result = await photoToWorksheetAction({ 
-      photoDataUri,
-      language,
-      manualText: showTextFallback ? manualText : undefined
-    });
+    try {
+      const result = await photoToWorksheetAction({ 
+        photoDataUri,
+        language,
+        manualText: showTextFallback ? manualText : undefined
+      });
 
-    if (result.success && result.data) {
-      // Assuming the worksheet is a string with questions separated by newlines
-      const generatedQuestions = result.data.worksheet
-        .split('\n')
-        .filter(q => q.trim().length > 0)
-        .map((q, index) => ({ id: index, text: q }));
-      setQuestions(generatedQuestions);
-      setShowTextFallback(false);
-    } else {
-      const isQuotaError = result.error?.includes('QUOTA_EXCEEDED') || result.error?.includes('429');
-      if (isQuotaError) {
-        setShowTextFallback(true);
-        toast({
-          title: "Google Vision Busy",
-          description: "Using Plan B: Please paste the text below for Local AI.",
-          variant: "destructive",
-        });
+      if (!result.success) {
+        const isQuotaError = result.error?.includes('QUOTA_EXCEEDED') || result.error?.includes('429');
+        if (isQuotaError) {
+          setShowTextFallback(true);
+          toast({
+            title: "Google Vision Busy",
+            description: "Using Plan B: Please paste the text below for Local AI.",
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Error",
+            description: result.error || "Failed to generate worksheet.",
+            variant: "destructive",
+          });
+        }
       } else {
-        toast({
-          title: "Error",
-          description: result.error || "Failed to generate worksheet.",
-          variant: "destructive",
-        });
+        // Assuming the worksheet is a string with questions separated by newlines
+        const generatedQuestions = result.data.worksheet
+          .split('\n')
+          .filter(q => q.trim().length > 0)
+          .map((q, index) => ({ id: index, text: q }));
+        setQuestions(generatedQuestions);
+        setShowTextFallback(false);
       }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to generate worksheet. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
   
   const handlePlayAudio = async (text: string, index: number) => {
@@ -119,14 +128,14 @@ export default function PhotoToWorksheetPage() {
     setAudioSrc(null);
     try {
       const result = await textToSpeechAction({ text });
-      if (result.success && result.data) {
-        setAudioSrc(result.data.audioDataUri);
-      } else {
+      if (!result.success) {
         toast({
           title: 'Error Generating Audio',
           description: result.error || 'Could not generate audio.',
           variant: 'destructive',
         });
+      } else {
+        setAudioSrc(result.data.audioDataUri);
       }
     } catch (error) {
       console.error(error);
