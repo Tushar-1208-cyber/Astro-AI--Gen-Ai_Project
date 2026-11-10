@@ -13,7 +13,7 @@ import { Slider } from "@/components/ui/slider";
 import { useLanguage } from "@/context/language-context";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 
-export default function askAstroPage() {
+export default function AskAstroPage() {
   const [question, setQuestion] = useState("");
   const [gradeLevel, setGradeLevel] = useState(5);
   const [answer, setAnswer] = useState<string | null>(null);
