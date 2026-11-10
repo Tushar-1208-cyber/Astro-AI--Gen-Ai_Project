@@ -110,8 +110,8 @@ async def generate_text(request: ChatRequest):
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_new,
-                max_length=2048,
-                temperature=0.7,
+                min_new_tokens=min(5, max_new),
+                temperature=request.temperature if request.temperature > 0 else 0.7,
                 do_sample=True,
                 repetition_penalty=1.1,
                 pad_token_id=tokenizer.eos_token_id,
