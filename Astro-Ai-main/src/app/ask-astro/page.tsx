@@ -49,10 +49,18 @@ export default function askAstroPage() {
     setAnswer(null);
     setAudioSrc(null);
 
-    const result = await askAstroAction({ question, gradeLevel, language });
-    setIsLoading(false);
+    try {
+      const result = await askAstroAction({ question, gradeLevel, language });
 
-    if (result.success && result.data) {
+      if (!result.success) {
+        toast({
+          title: t('error'),
+          description: result.error || t('askAstro_error_generic'),
+          variant: "destructive",
+        });
+        return;
+      }
+
       const generatedAnswer = result.data.answer;
       setAnswer(generatedAnswer);
       
@@ -60,7 +68,7 @@ export default function askAstroPage() {
       setIsAudioLoading(true);
       try {
         const audioResult = await textToSpeechAction({ text: generatedAnswer });
-        if (audioResult.success && audioResult.data) {
+        if (audioResult.success) {
           setAudioSrc(audioResult.data.audioDataUri);
         }
       } catch (e) {
@@ -68,15 +76,15 @@ export default function askAstroPage() {
       } finally {
         setIsAudioLoading(false);
       }
-    } else {
+    } catch (error) {
       toast({
         title: t('error'),
-        description: result.error || t('askAstro_error_generic'),
+        description: error instanceof Error ? error.message : t('askAstro_error_generic'),
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
   
   const handlePlayAudio = async () => {
@@ -85,15 +93,15 @@ export default function askAstroPage() {
     setAudioSrc(null);
     try {
       const result = await textToSpeechAction({ text: answer });
-      if (result.success && result.data) {
-        setAudioSrc(result.data.audioDataUri);
-      } else {
+      if (!result.success) {
         toast({
           title: t('error'),
           description: result.error || t('askAstro_error_audio'),
           variant: "destructive",
         });
+        return;
       }
+      setAudioSrc(result.data.audioDataUri);
     } catch (error: any) {
       toast({
         title: t('error'),
