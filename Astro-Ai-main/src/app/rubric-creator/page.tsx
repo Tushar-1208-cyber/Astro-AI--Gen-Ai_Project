@@ -56,19 +56,27 @@ export default function RubricCreatorPage() {
     setIsLoading(true);
     setRubric(null);
 
-    const result = await createRubricAction({ assignmentDescription, criteria });
+    try {
+      const result = await createRubricAction({ assignmentDescription, criteria });
 
-    if (result.success && result.data) {
-      setRubric(result.data);
-    } else {
+      if (result.success && result.data) {
+        setRubric(result.data);
+      } else {
+        toast({
+          title: "Error Generating Rubric",
+          description: 'error' in result ? result.error : "An unknown error occurred.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error Generating Rubric",
-        description: 'error' in result ? result.error : "An unknown error occurred.",
+        description: error instanceof Error ? error.message : "Failed to generate rubric. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (
