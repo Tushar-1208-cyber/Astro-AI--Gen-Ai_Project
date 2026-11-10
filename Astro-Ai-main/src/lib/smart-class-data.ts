@@ -1,4 +1,4 @@
-import allGrades from '../../All grades.json';
+import allGrades from '../../Allgrades.json';
 
 export type Video = {
     id: number;
