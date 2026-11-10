@@ -1,7 +1,8 @@
-
 'use server';
 
-const LOCAL_AI_URL = 'http://127.0.0.1:8000/generate';
+import { executeStructuredGeneration } from '../provider';
+
+export type GenerateQuizInput = { topic: string; quizType: string; numQuestions: number };
 
 export interface GenerateQuizOutput {
   title: string;
@@ -13,46 +14,53 @@ export interface GenerateQuizOutput {
   }>;
 }
 
-export async function generateQuiz(input: any) {
-  const GEMINI_API_KEY = process.env.GOOGLE_GENAI_API_KEY;
-  console.log(`🚀 [System] Generating Quiz for: ${input.topic} (Key: ${!!GEMINI_API_KEY})`);
-  
-  const prompt = `Create a ${input.quizType} quiz about "${input.topic}" with ${input.numQuestions} questions. Return ONLY JSON.`;
+export async function generateQuiz(input: GenerateQuizInput): Promise<GenerateQuizOutput> {
+  const prompt = `Create a ${input.quizType} quiz about "${input.topic}" with ${input.numQuestions} questions. Return ONLY JSON with format:
+  {
+    "title": "Quiz Title",
+    "questions": [
+      {
+        "question": "Question text",
+        "options": ["Choice 1", "Choice 2", "Choice 3", "Choice 4"],
+        "answer": "Choice 1"
+      }
+    ]
+  }`;
 
-  try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { response_mime_type: "application/json" }
-        })
-    });
+  const raw = await executeStructuredGeneration<any>({
+    prompt,
+    maxTokens: 1500,
+    temperature: 0.7
+  });
 
-    const data = await response.json();
-    if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
-        const output = JSON.parse(data.candidates[0].content.parts[0].text);
-        return { ...output, quizType: input.quizType };
-    }
-    console.error("❌ Gemini Error:", JSON.stringify(data));
-  } catch (e) {
-    console.error("❌ Gemini Fetch failed:", e);
+  if (!raw || !raw.questions || !Array.isArray(raw.questions)) {
+    throw new Error("AI generation failed to produce valid quiz questions.");
   }
 
-  console.warn("⚠️ Switching to Local AI...");
-  try {
-    const res = await fetch(LOCAL_AI_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, max_tokens: 1024 })
-    });
-    const localData = await res.json();
-    const jsonMatch = localData.response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) return { ...JSON.parse(jsonMatch[0]), quizType: input.quizType };
-  } catch (e) {
-    console.error("❌ Local AI failed:", e);
+  const validQuestions = raw.questions
+    .filter((q: any) => q && typeof q.question === 'string' && q.question.trim().length > 3)
+    .map((q: any) => {
+      const options = Array.isArray(q.options)
+        ? q.options.filter((o: any) => typeof o === 'string' && o.trim().length > 0).map((o: any) => o.trim())
+        : [];
+      const answer = typeof q.answer === 'string' && q.answer.trim().length > 0
+        ? q.answer.trim()
+        : (options.length > 0 ? options[0] : '');
+      return {
+        question: q.question.trim(),
+        answer,
+        options
+      };
+    })
+    .filter((q: any) => q.question.length > 0 && (q.answer.length > 0 || q.options.length > 0));
+
+  if (validQuestions.length === 0) {
+    throw new Error("AI generation produced malformed or empty quiz questions. Please retry generation.");
   }
 
-  throw new Error("AI Down. Check .env.local and ai_server.py.");
+  return {
+    title: typeof raw.title === 'string' && raw.title.trim().length > 0 ? raw.title.trim() : `${input.topic} Quiz`,
+    quizType: input.quizType,
+    questions: validQuestions
+  };
 }
