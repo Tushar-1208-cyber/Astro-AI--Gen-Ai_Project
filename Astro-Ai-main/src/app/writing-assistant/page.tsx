@@ -52,19 +52,27 @@ export default function WritingAssistantPage() {
     setIsLoading(true);
     setResult(null);
 
-    const actionResult = await enhanceWritingAction({ text: inputText });
+    try {
+      const actionResult = await enhanceWritingAction({ text: inputText });
 
-    if (actionResult.success && actionResult.data) {
-      setResult(actionResult.data as EnhanceWritingOutput);
-    } else {
+      if (actionResult.success && actionResult.data) {
+        setResult(actionResult.data as EnhanceWritingOutput);
+      } else {
+        toast({
+          title: "Error",
+          description: 'error' in actionResult ? actionResult.error : "Failed to analyze text.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: "Error",
-        description: 'error' in actionResult ? actionResult.error : "Failed to analyze text.",
+        description: error instanceof Error ? error.message : "Failed to analyze text. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (
