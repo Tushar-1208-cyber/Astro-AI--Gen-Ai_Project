@@ -79,7 +79,8 @@ import type { CreateMentorshipPlanInput } from "@/ai/flows/create-mentorship-pla
 
 import { studentRosterDb, type Student, gradesDb, type GradeEntry, calendarDb, type CalendarEvent, recordingsDb, type ClassRecording, attendanceDb } from "@/lib/firestore";
 import { generateVideoFlowAction } from "@/ai/flows/generate-video";
-import { getAuthenticatedUser, getAuthenticatedUserWithToken } from "./auth";
+import { getAuthenticatedUser } from "./auth";
+import { sanitizeErrorMessage } from "./security";
 
 
 // Wrapper function to handle Genkit flow execution and error handling
@@ -89,7 +90,7 @@ async function runAction<I, O>(action: (input: I) => Promise<O>, input: I): Prom
         return { success: true, data: result };
     } catch (error) {
         console.error(error);
-        const message = error instanceof Error ? error.message : "An unknown error occurred.";
+        const message = sanitizeErrorMessage(error);
         return { success: false, error: message };
     }
 }
@@ -109,18 +110,20 @@ export async function generateLocalizedContentAction(
   return runAction(generateLocalizedContent, input);
 }
 
-export async function photoToWorksheetAction(input: PhotoToWorksheetInput & { manualText?: string }) {
+export async function photoToWorksheetAction(
+  input: PhotoToWorksheetInput & { manualText?: string }
+): Promise<{ success: true; data: { worksheet: string } } | { success: false; error: string }> {
   if (input.manualText) {
     console.log("🦾 [Local AI] Generating worksheet from manual text...");
-    return runAction(askAstro, {
+    const result = await runAction(askAstro, {
       question: `Create an interactive worksheet based on this text. Include a title and 5-7 questions (MCQ, True/False, Short Answer). Return the worksheet as a clear list of questions. TEXT: ${input.manualText}`,
+      gradeLevel: 6,
       language: input.language || 'en'
-    }).then(result => {
-        if (result.success) {
-            return { success: true, data: { worksheet: result.data.answer } };
-        }
-        return result;
     });
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+    return { success: true, data: { worksheet: result.data.answer } };
   }
   return runAction(photoToWorksheet, input);
 }
@@ -141,27 +144,20 @@ export async function enhanceWritingAction(input: EnhanceWritingInput) {
   return runAction(enhanceWriting, input);
 }
 
-export async function recognizeStudentsAction(input: {photoDataUri: string}, idToken?: string) {  
-  let user;
-  if (idToken) {
-    user = await getAuthenticatedUserWithToken(idToken);
-  } else {
-    user = await getAuthenticatedUser();
-  }
+export async function recognizeStudentsAction(input: {photoDataUri: string}) {  
+  const user = await getAuthenticatedUser();
   if (!user) {
-    console.log("⚠️ Dev Mode: Using mock user for attendance testing.");
-    user = { uid: "mock-teacher-id" };
+    return { success: false, error: "Authentication required. Please log in." };
   }
   
-  const studentRoster = await studentRosterDb.getStudents(user.uid);
+  const studentRoster = await studentRosterDb.getStudents(user.userId);
   const flowInput: RecognizeStudentsInputWithRoster = { ...input, studentRoster };
 
   const result = await runAction(recognizeStudents, flowInput);
   
   if (result.success) {
-    // Automatically save to database
     try {
-      await attendanceDb.addAttendance(user.uid, {
+      await attendanceDb.addAttendance(user.userId, {
         date: new Date(),
         presentStudents: result.data.presentStudents,
         photoDataUri: input.photoDataUri
@@ -175,14 +171,13 @@ export async function recognizeStudentsAction(input: {photoDataUri: string}, idT
 }
 
 export async function submitAttendanceAction(presentStudents: string[], photoDataUri?: string) {
-    let user = await getAuthenticatedUser();
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user for attendance submission.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     
     try {
-        await attendanceDb.addAttendance(user.uid, {
+        await attendanceDb.addAttendance(user.userId, {
             date: new Date(),
             presentStudents,
             photoDataUri: photoDataUri || ""
@@ -215,7 +210,7 @@ export async function getTtsVoicesAction(languageCode: string) {
         return { success: true, data: result };
     } catch (error) {
         console.error(error);
-        const message = error instanceof Error ? error.message : "Failed to get TTS voices.";
+        const message = sanitizeErrorMessage(error);
         return { success: false, error: message };
     }
 }
@@ -247,19 +242,13 @@ export async function createMentorshipPlanAction(input: CreateMentorshipPlanInpu
 
 
 // Student Roster Actions
-export async function getStudentsAction(idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
+export async function getStudentsAction() {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        const students = await studentRosterDb.getStudents(user.uid);
+        const students = await studentRosterDb.getStudents(user.userId);
         return { success: true, data: students };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to get students.";
@@ -267,20 +256,14 @@ export async function getStudentsAction(idToken?: string) {
     }
 }
 
-export async function addStudentAction(student: Omit<Student, 'id' | 'uid'>, idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
+export async function addStudentAction(student: Omit<Student, 'id' | 'uid'>) {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await studentRosterDb.addStudent(user.uid, student);
-        const students = await studentRosterDb.getStudents(user.uid);
+        await studentRosterDb.addStudent(user.userId, student);
+        const students = await studentRosterDb.getStudents(user.userId);
         return { success: true, data: students };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to add student.";
@@ -288,20 +271,14 @@ export async function addStudentAction(student: Omit<Student, 'id' | 'uid'>, idT
     }
 }
 
-export async function deleteStudentAction(id: string, idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
+export async function deleteStudentAction(id: string) {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await studentRosterDb.deleteStudent(user.uid, id);
-        const students = await studentRosterDb.getStudents(user.uid);
+        await studentRosterDb.deleteStudent(user.userId, id);
+        const students = await studentRosterDb.getStudents(user.userId);
         return { success: true, data: students };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to delete student.";
@@ -311,19 +288,13 @@ export async function deleteStudentAction(id: string, idToken?: string) {
 
 
 // Grade Tracking Actions
-export async function getGradesAction(idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
+export async function getGradesAction() {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        const grades = await gradesDb.getGrades(user.uid);
+        const grades = await gradesDb.getGrades(user.userId);
         return { success: true, data: grades };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to get grades.";
@@ -331,20 +302,14 @@ export async function getGradesAction(idToken?: string) {
     }
 }
 
-export async function addGradeAction(grade: Omit<GradeEntry, 'id' | 'uid'>, idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
+export async function addGradeAction(grade: Omit<GradeEntry, 'id' | 'uid'>) {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await gradesDb.addGrade(user.uid, grade);
-        const grades = await gradesDb.getGrades(user.uid);
+        await gradesDb.addGrade(user.userId, grade);
+        const grades = await gradesDb.getGrades(user.userId);
         return { success: true, data: grades };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to add grade.";
@@ -352,20 +317,14 @@ export async function addGradeAction(grade: Omit<GradeEntry, 'id' | 'uid'>, idTo
     }
 }
 
-export async function deleteGradeAction(id: string, idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
+export async function deleteGradeAction(id: string) {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await gradesDb.deleteGrade(user.uid, id);
-        const grades = await gradesDb.getGrades(user.uid);
+        await gradesDb.deleteGrade(user.userId, id);
+        const grades = await gradesDb.getGrades(user.userId);
         return { success: true, data: grades };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to delete grade.";
@@ -380,15 +339,9 @@ export async function generateVideoAction(input: {
   aspectRatio: "16:9" | "9:16" | "1:1";
   style: "realistic" | "cinematic" | "animated" | "artistic";
   quality: "standard" | "high" | "ultra";
-}, idToken?: string) {
-  let user;
-  if (idToken) {
-    user = await getAuthenticatedUserWithToken(idToken);
-  } else {
-    user = await getAuthenticatedUser();
-  }
-  
-  if (!user) return { success: false, error: "User not authenticated." };
+}) {
+  const user = await getAuthenticatedUser();
+  if (!user) return { success: false, error: "Authentication required. Please log in." };
   
   try {
     const result = await generateVideoFlowAction(input);
@@ -400,20 +353,13 @@ export async function generateVideoAction(input: {
 }
 
 // Calendar Event Actions
-export async function getCalendarEventsAction(idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
-    
+export async function getCalendarEventsAction() {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        const events = await calendarDb.getEvents(user.uid);
+        const events = await calendarDb.getEvents(user.userId);
         return { success: true, data: events };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to get events.";
@@ -421,21 +367,14 @@ export async function getCalendarEventsAction(idToken?: string) {
     }
 }
 
-export async function addCalendarEventAction(event: Omit<CalendarEvent, 'id' | 'uid'>, idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
-    
+export async function addCalendarEventAction(event: Omit<CalendarEvent, 'id' | 'uid'>) {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await calendarDb.addEvent(user.uid, event);
-        const events = await calendarDb.getEvents(user.uid);
+        await calendarDb.addEvent(user.userId, event);
+        const events = await calendarDb.getEvents(user.userId);
         return { success: true, data: events };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to add event.";
@@ -443,21 +382,14 @@ export async function addCalendarEventAction(event: Omit<CalendarEvent, 'id' | '
     }
 }
 
-export async function deleteCalendarEventAction(id: string, idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
-    
+export async function deleteCalendarEventAction(id: string) {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await calendarDb.deleteEvent(user.uid, id);
-        const events = await calendarDb.getEvents(user.uid);
+        await calendarDb.deleteEvent(user.userId, id);
+        const events = await calendarDb.getEvents(user.userId);
         return { success: true, data: events };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to delete event.";
@@ -470,11 +402,10 @@ export async function deleteCalendarEventAction(id: string, idToken?: string) {
 export async function getRecordingsAction() {
     const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        const recordings = await recordingsDb.getRecordings(user.uid);
+        const recordings = await recordingsDb.getRecordings(user.userId);
         return { success: true, data: recordings };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to get recordings.";
@@ -485,12 +416,11 @@ export async function getRecordingsAction() {
 export async function addRecordingAction(recording: Omit<ClassRecording, 'id' | 'uid' | 'createdAt'>) {
     const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await recordingsDb.addRecording(user.uid, recording);
-        const recordings = await recordingsDb.getRecordings(user.uid);
+        await recordingsDb.addRecording(user.userId, recording);
+        const recordings = await recordingsDb.getRecordings(user.userId);
         return { success: true, data: recordings };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to add recording.";
@@ -501,12 +431,11 @@ export async function addRecordingAction(recording: Omit<ClassRecording, 'id' | 
 export async function deleteRecordingAction(id: string) {
     const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     try {
-        await recordingsDb.deleteRecording(user.uid, id);
-        const recordings = await recordingsDb.getRecordings(user.uid);
+        await recordingsDb.deleteRecording(user.userId, id);
+        const recordings = await recordingsDb.getRecordings(user.userId);
         return { success: true, data: recordings };
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to delete recording.";
@@ -515,50 +444,56 @@ export async function deleteRecordingAction(id: string) {
 }
 
 // Dashboard Stats Action
-export async function getDashboardStatsAction(idToken?: string) {
-    let user;
-    if (idToken) {
-        user = await getAuthenticatedUserWithToken(idToken);
-    } else {
-        user = await getAuthenticatedUser();
-    }
-    
+export async function getDashboardStatsAction() {
+    const user = await getAuthenticatedUser();
     if (!user) {
-        console.log("⚠️ Dev Mode: Using mock user.");
-        user = { uid: "mock-teacher-id" };
+        return { success: false, error: "Authentication required. Please log in." };
     }
     
     try {
         // Fetch all data in parallel
-        const [students, grades, events, recordings] = await Promise.all([
-            studentRosterDb.getStudents(user.uid),
-            gradesDb.getGrades(user.uid),
-            calendarDb.getEvents(user.uid),
-            recordingsDb.getRecordings(user.uid)
+        const [students, grades, events, recordings, attendance] = await Promise.all([
+            studentRosterDb.getStudents(user.userId),
+            gradesDb.getGrades(user.userId),
+            calendarDb.getEvents(user.userId),
+            recordingsDb.getRecordings(user.userId),
+            attendanceDb.getAttendance(user.userId)
         ]);
 
         // Calculate statistics
         const totalStudents = students.length;
         const totalGrades = grades.length;
         const averageGrade = grades.length > 0 
-            ? Math.round(grades.reduce((sum, grade) => sum + grade.grade, 0) / grades.length)
+            ? Math.round(grades.reduce((sum, grade) => sum + (Number(grade.grade) || 0), 0) / grades.length)
             : 0;
         
         const now = new Date();
+        const parseDate = (d: any): Date => {
+            if (d instanceof Date) return d;
+            if (d && typeof d.toDate === 'function') return d.toDate();
+            if (d && typeof d === 'object' && '_seconds' in d) return new Date(d._seconds * 1000);
+            return new Date(d);
+        };
+
         const upcomingEvents = events.filter(event => {
-            const eventDate = event.date instanceof Date ? event.date : event.date.toDate();
-            return eventDate >= now;
+            const eventDate = parseDate(event.date);
+            return !isNaN(eventDate.getTime()) && eventDate >= now;
         }).length;
 
         const totalRecordings = recordings.length;
         
         const lessonsThisMonth = events.filter(event => {
-            const eventDate = event.date instanceof Date ? event.date : event.date.toDate();
-            return event.type === 'Lesson' && eventDate.getMonth() === now.getMonth() && eventDate.getFullYear() === now.getFullYear();
+            const eventDate = parseDate(event.date);
+            return !isNaN(eventDate.getTime()) && event.type === 'Lesson' && eventDate.getMonth() === now.getMonth() && eventDate.getFullYear() === now.getFullYear();
         }).length;
 
-        // Calculate attendance rate (mock data for now)
-        const attendanceRate = totalStudents > 0 ? Math.round(85 + Math.random() * 15) : 0;
+        // Accurate attendance rate calculation from real records
+        let attendanceRate = 0;
+        if (totalStudents > 0 && attendance.length > 0) {
+            const totalPossible = attendance.length * totalStudents;
+            const totalPresent = attendance.reduce((sum, a) => sum + (Array.isArray(a.presentStudents) ? a.presentStudents.length : 0), 0);
+            attendanceRate = totalPossible > 0 ? Math.round((totalPresent / totalPossible) * 100) : 0;
+        }
 
         return {
             success: true,
