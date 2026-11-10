@@ -46,19 +46,27 @@ export default function TeacherProfessionalDevelopmentPage() {
     setIsLoading(true);
     setPlan(null);
 
-    const result = await professionalDevelopmentAction({ learningGoal });
+    try {
+      const result = await professionalDevelopmentAction({ learningGoal });
 
-    if (result.success && result.data) {
-      setPlan(result.data);
-    } else {
+      if (result.success && result.data) {
+        setPlan(result.data);
+      } else {
+        toast({
+          title: t('error'),
+          description: 'error' in result ? result.error : t('pd_error_generic'),
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
         title: t('error'),
-        description: 'error' in result ? result.error : t('pd_error_generic'),
+        description: error instanceof Error ? error.message : t('pd_error_generic'),
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (
