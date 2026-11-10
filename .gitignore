@@ -21,6 +21,7 @@ Thumbs.db
 
 # Env files
 .env*
+!.env.example
 .firebase/
 
 # Firebase service account keys
