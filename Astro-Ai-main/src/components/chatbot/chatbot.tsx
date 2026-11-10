@@ -103,23 +103,36 @@ export function Chatbot() {
       history = history.slice(1);
     }
 
-    const result = await appChatbotAction({ query: input, history, studentRoster: [] });
+    try {
+      const result = await appChatbotAction({ query: input, history, studentRoster: [] });
 
-    if (result.success) {
-      const assistantMessage: Message = { role: 'assistant', content: result.data.response };
-      setMessages((prev) => [...prev, assistantMessage]);
-    } else {
+      if (result.success) {
+        const assistantMessage: Message = { role: 'assistant', content: result.data.response };
+        setMessages((prev) => [...prev, assistantMessage]);
+      } else {
+        toast({
+          title: 'Chatbot Error',
+          description: result.error || 'Something went wrong.',
+          variant: 'destructive',
+        });
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.role === 'user') {
+          setMessages(prev => prev.slice(0, -1));
+        }
+      }
+    } catch (error) {
       toast({
         title: 'Chatbot Error',
-        description: result.error || 'Something went wrong.',
+        description: error instanceof Error ? error.message : 'Failed to reach chatbot assistant.',
         variant: 'destructive',
       });
-       const lastMessage = messages[messages.length - 1];
-       if(lastMessage.role === 'user') {
-         setMessages(prev => prev.slice(0, -1));
-       }
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.role === 'user') {
+        setMessages(prev => prev.slice(0, -1));
+      }
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
   
   const toggleListening = () => {
