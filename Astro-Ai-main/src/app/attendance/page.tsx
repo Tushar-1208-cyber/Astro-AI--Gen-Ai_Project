@@ -28,12 +28,18 @@ export default function AttendancePage() {
   useEffect(() => {
     async function fetchStudents() {
       const result = await getStudentsAction();
-      if (result.success) {
+      if (result.success && result.data) {
         setAllStudents(result.data.map((s: any) => ({ id: s.id, name: s.name })));
+      } else if (!result.success) {
+        toast({
+          title: "Roster Error",
+          description: result.error || "Failed to load student roster.",
+          variant: "destructive"
+        });
       }
     }
     if (authStatus === 'authenticated') fetchStudents();
-  }, [authStatus]);
+  }, [authStatus, toast]);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -78,6 +84,12 @@ export default function AttendancePage() {
       });
       setAttendance(newAttendance);
       toast({ title: "Scan Complete", description: `${recognizedNames.length} students recognized.` });
+    } else {
+      toast({
+        title: "Recognition Failed",
+        description: ('error' in result && result.error) ? result.error : "Failed to recognize students from the photo.",
+        variant: "destructive"
+      });
     }
     setIsLoading(false);
   };
