@@ -1,17 +1,12 @@
 import type {NextConfig} from 'next';
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ['chromadb', 'genkitx-chromadb'],
   /* config options here */
   experimental: {
     serverActions: {
       bodySizeLimit: '100mb',
     },
-  },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
   },
   images: {
     remotePatterns: [
