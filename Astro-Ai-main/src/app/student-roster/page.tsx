@@ -148,7 +148,7 @@ export default function StudentRosterPage() {
             <Card>
                 <CardHeader>
                     <CardTitle className="font-headline flex items-center gap-2"><UserPlus /> Add New Student</CardTitle>
-                    <CardDescription>Enter the student's name and upload their photo.</CardDescription>
+                    <CardDescription>Enter the student&apos;s name and upload their photo.</CardDescription>
                 </CardHeader>
                  <form onSubmit={handleAddStudent}>
                 <CardContent className="space-y-4">
