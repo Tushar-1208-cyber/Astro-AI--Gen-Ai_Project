@@ -343,6 +343,78 @@ export const attendanceRepo = {
     return await q.exec();
   },
 
+  validateAndNormalizeRoster: async (
+    userId: string,
+    submittedStudents: string[]
+  ): Promise<{
+    valid: boolean;
+    canonicalPresentStudents: string[];
+    totalStudents: number;
+  }> => {
+    await dbConnect();
+    const roster = await Student.find({ userId }).select('_id id legacyId name').lean().exec();
+    const totalStudents = roster.length;
+
+    // Detect duplicate student names in roster (to prevent ambiguous name resolutions)
+    const nameFrequencies = new Map<string, number>();
+    for (const student of roster) {
+      const normalizedName = (student.name || '').trim().toLowerCase();
+      nameFrequencies.set(normalizedName, (nameFrequencies.get(normalizedName) || 0) + 1);
+    }
+
+    const canonicalPresentSet = new Set<string>();
+
+    for (const rawEntry of submittedStudents) {
+      if (rawEntry === null || rawEntry === undefined) {
+        throw new Error('Invalid attendance submission: Student identifier cannot be null or undefined.');
+      }
+      const trimmed = String(rawEntry).trim();
+      if (trimmed.length === 0) {
+        throw new Error('Invalid attendance submission: Student identifier cannot be empty or whitespace-only.');
+      }
+
+      // Check for match by stable student ID
+      const matchedById = roster.find(
+        (s: any) =>
+          (s._id && s._id.toString() === trimmed) ||
+          (s.id && s.id === trimmed) ||
+          (s.legacyId && s.legacyId === trimmed)
+      );
+
+      if (matchedById) {
+        canonicalPresentSet.add(matchedById.name.trim());
+        continue;
+      }
+
+      // Check for match by student name
+      const lower = trimmed.toLowerCase();
+      const frequency = nameFrequencies.get(lower) || 0;
+
+      if (frequency > 1) {
+        throw new Error(
+          `Ambiguous student name "${trimmed}" matches multiple students in your roster. Please resolve duplicate names or use unique student IDs.`
+        );
+      }
+
+      if (frequency === 1) {
+        const matchedByName = roster.find((s) => (s.name || '').trim().toLowerCase() === lower);
+        if (matchedByName) {
+          canonicalPresentSet.add(matchedByName.name.trim());
+          continue;
+        }
+      }
+
+      // If neither ID nor single name matched, student does not belong to this teacher's roster
+      throw new Error(`Student "${trimmed}" is not enrolled in your roster.`);
+    }
+
+    return {
+      valid: true,
+      canonicalPresentStudents: Array.from(canonicalPresentSet),
+      totalStudents,
+    };
+  },
+
   addAttendance: async (
     userId: string,
     data: {
@@ -351,9 +423,34 @@ export const attendanceRepo = {
       photoDataUri?: string;
       photoUrl?: string;
       totalStudents?: number;
-    }
+    },
+    options?: { validateRoster?: boolean }
   ): Promise<IAttendance> => {
     await dbConnect();
+
+    let finalPresentStudents: string[];
+    let totalStudents: number | undefined = data.totalStudents;
+
+    if (options?.validateRoster) {
+      const validated = await attendanceRepo.validateAndNormalizeRoster(
+        userId,
+        data.presentStudents || []
+      );
+      finalPresentStudents = validated.canonicalPresentStudents;
+      totalStudents = validated.totalStudents;
+    } else {
+      // Normalize raw entries to trimmed non-empty strings and deduplicate
+      finalPresentStudents = Array.from(
+        new Set(
+          (data.presentStudents || [])
+            .map((s) => String(s || '').trim())
+            .filter((s) => s.length > 0)
+        )
+      );
+      if (totalStudents === undefined) {
+        totalStudents = await Student.countDocuments({ userId }).exec();
+      }
+    }
 
     let finalPhotoUrl = data.photoUrl || '';
     if (data.photoDataUri && data.photoDataUri.startsWith('data:image/')) {
@@ -367,16 +464,10 @@ export const attendanceRepo = {
       finalPhotoUrl = data.photoDataUri;
     }
 
-    // Capture historical roster size snapshot at session creation time
-    let totalStudents = data.totalStudents;
-    if (totalStudents === undefined) {
-      totalStudents = await Student.countDocuments({ userId }).exec();
-    }
-
     const newAttendance = await Attendance.create({
       userId,
       date: new Date(data.date),
-      presentStudents: data.presentStudents || [],
+      presentStudents: finalPresentStudents,
       totalStudents,
       photoUrl: finalPhotoUrl,
       photoDataUri: finalPhotoUrl,
@@ -553,12 +644,29 @@ export const dashboardRepo = {
                           $setUnion: [
                             {
                               $filter: {
-                                input: { $ifNull: ['$presentStudents', []] },
-                                as: 'item',
+                                input: {
+                                  $map: {
+                                    input: { $ifNull: ['$presentStudents', []] },
+                                    as: 'rawItem',
+                                    in: {
+                                      $cond: [
+                                        {
+                                          $or: [
+                                            { $eq: ['$$rawItem', null] },
+                                            { $eq: [{ $type: '$$rawItem' }, 'missing'] },
+                                          ],
+                                        },
+                                        '',
+                                        { $trim: { input: { $toString: '$$rawItem' } } },
+                                      ],
+                                    },
+                                  },
+                                },
+                                as: 'cleanItem',
                                 cond: {
                                   $and: [
-                                    { $ne: ['$$item', null] },
-                                    { $ne: [{ $trim: { input: { $toString: '$$item' } } }, ''] },
+                                    { $ne: ['$$cleanItem', null] },
+                                    { $ne: ['$$cleanItem', ''] },
                                   ],
                                 },
                               },
