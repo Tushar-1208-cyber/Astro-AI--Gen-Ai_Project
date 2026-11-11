@@ -24,6 +24,9 @@ export const studentRosterDb = {
   deleteStudent: async (uid: string, id: string): Promise<void> => {
     await studentRepo.deleteStudent(uid, id);
   },
+  updateStudent: async (uid: string, id: string, student: Partial<Omit<Student, 'id' | 'uid'>>): Promise<void> => {
+    await studentRepo.updateStudent(uid, id, student);
+  },
 };
 
 export const gradesDb = {
