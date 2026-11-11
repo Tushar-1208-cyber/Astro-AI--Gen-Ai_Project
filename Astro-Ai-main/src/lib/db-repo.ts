@@ -345,24 +345,40 @@ export const attendanceRepo = {
 
   validateAndNormalizeRoster: async (
     userId: string,
-    submittedStudents: string[]
+    submittedStudents: string[],
+    preFetchedRoster?: Array<any>
   ): Promise<{
     valid: boolean;
-    canonicalPresentStudents: string[];
+    canonicalStudentIds: string[];
+    canonicalDisplayNames: string[];
+    canonicalPresentStudents?: string[];
     totalStudents: number;
   }> => {
     await dbConnect();
-    const roster = await Student.find({ userId }).select('_id id legacyId name').lean().exec();
+    const roster =
+      preFetchedRoster || (await Student.find({ userId }).select('_id id legacyId name').lean().exec());
     const totalStudents = roster.length;
 
     // Detect duplicate student names in roster (to prevent ambiguous name resolutions)
+    const rosterIdMap = new Map<string, { id: string; name: string }>();
     const nameFrequencies = new Map<string, number>();
+    const nameToStudentMap = new Map<string, { id: string; name: string }>();
+
     for (const student of roster) {
-      const normalizedName = (student.name || '').trim().toLowerCase();
-      nameFrequencies.set(normalizedName, (nameFrequencies.get(normalizedName) || 0) + 1);
+      const canonicalId = student._id ? student._id.toString() : student.id;
+      const canonicalName = (student.name || '').trim();
+      const normName = canonicalName.toLowerCase();
+
+      if (canonicalId) rosterIdMap.set(canonicalId, { id: canonicalId, name: canonicalName });
+      if (student.id) rosterIdMap.set(student.id, { id: canonicalId, name: canonicalName });
+      if (student.legacyId) rosterIdMap.set(student.legacyId, { id: canonicalId, name: canonicalName });
+
+      nameFrequencies.set(normName, (nameFrequencies.get(normName) || 0) + 1);
+      nameToStudentMap.set(normName, { id: canonicalId, name: canonicalName });
     }
 
-    const canonicalPresentSet = new Set<string>();
+    const canonicalIdSet = new Set<string>();
+    const canonicalDisplayNames: string[] = [];
 
     for (const rawEntry of submittedStudents) {
       if (rawEntry === null || rawEntry === undefined) {
@@ -374,15 +390,12 @@ export const attendanceRepo = {
       }
 
       // Check for match by stable student ID
-      const matchedById = roster.find(
-        (s: any) =>
-          (s._id && s._id.toString() === trimmed) ||
-          (s.id && s.id === trimmed) ||
-          (s.legacyId && s.legacyId === trimmed)
-      );
-
-      if (matchedById) {
-        canonicalPresentSet.add(matchedById.name.trim());
+      if (rosterIdMap.has(trimmed)) {
+        const student = rosterIdMap.get(trimmed)!;
+        if (!canonicalIdSet.has(student.id)) {
+          canonicalIdSet.add(student.id);
+          canonicalDisplayNames.push(student.name);
+        }
         continue;
       }
 
@@ -392,16 +405,17 @@ export const attendanceRepo = {
 
       if (frequency > 1) {
         throw new Error(
-          `Ambiguous student name "${trimmed}" matches multiple students in your roster. Please resolve duplicate names or use unique student IDs.`
+          `Ambiguous student name "${trimmed}" matches multiple students in your roster. Please submit attendance using unique student IDs.`
         );
       }
 
       if (frequency === 1) {
-        const matchedByName = roster.find((s) => (s.name || '').trim().toLowerCase() === lower);
-        if (matchedByName) {
-          canonicalPresentSet.add(matchedByName.name.trim());
-          continue;
+        const student = nameToStudentMap.get(lower)!;
+        if (!canonicalIdSet.has(student.id)) {
+          canonicalIdSet.add(student.id);
+          canonicalDisplayNames.push(student.name);
         }
+        continue;
       }
 
       // If neither ID nor single name matched, student does not belong to this teacher's roster
@@ -410,7 +424,65 @@ export const attendanceRepo = {
 
     return {
       valid: true,
-      canonicalPresentStudents: Array.from(canonicalPresentSet),
+      canonicalStudentIds: Array.from(canonicalIdSet),
+      canonicalDisplayNames,
+      canonicalPresentStudents: canonicalDisplayNames,
+      totalStudents,
+    };
+  },
+
+  validateAndNormalizeAiRecognition: async (
+    userId: string,
+    rawRecognizedNames: string[]
+  ): Promise<{
+    canonicalStudentIds: string[];
+    canonicalDisplayNames: string[];
+    unresolvedNames: string[];
+    totalStudents: number;
+  }> => {
+    await dbConnect();
+    const roster = await Student.find({ userId }).select('_id id legacyId name').lean().exec();
+    const totalStudents = roster.length;
+
+    const nameFrequencies = new Map<string, number>();
+    const nameToStudentMap = new Map<string, { id: string; name: string }>();
+
+    for (const student of roster) {
+      const canonicalId = student._id ? student._id.toString() : student.id;
+      const canonicalName = (student.name || '').trim();
+      const normName = canonicalName.toLowerCase();
+
+      nameFrequencies.set(normName, (nameFrequencies.get(normName) || 0) + 1);
+      nameToStudentMap.set(normName, { id: canonicalId, name: canonicalName });
+    }
+
+    const canonicalIdSet = new Set<string>();
+    const canonicalDisplayNames: string[] = [];
+    const unresolvedNames: string[] = [];
+
+    for (const raw of rawRecognizedNames) {
+      const trimmed = String(raw || '').trim();
+      if (!trimmed) continue;
+
+      const lower = trimmed.toLowerCase();
+      const freq = nameFrequencies.get(lower) || 0;
+
+      if (freq === 1) {
+        const student = nameToStudentMap.get(lower)!;
+        if (!canonicalIdSet.has(student.id)) {
+          canonicalIdSet.add(student.id);
+          canonicalDisplayNames.push(student.name);
+        }
+      } else {
+        // Either ambiguous duplicate name (freq > 1) or unknown/hallucinated name (freq === 0)
+        unresolvedNames.push(trimmed);
+      }
+    }
+
+    return {
+      canonicalStudentIds: Array.from(canonicalIdSet),
+      canonicalDisplayNames,
+      unresolvedNames,
       totalStudents,
     };
   },
@@ -418,39 +490,31 @@ export const attendanceRepo = {
   addAttendance: async (
     userId: string,
     data: {
-      date: Date | string;
-      presentStudents: string[];
+      date?: Date | string;
+      presentStudents?: string[];
+      presentStudentIds?: string[];
       photoDataUri?: string;
       photoUrl?: string;
       totalStudents?: number;
     },
-    options?: { validateRoster?: boolean }
+    internalContext?: {
+      preValidatedRoster?: Array<any>;
+      validateRoster?: boolean;
+    }
   ): Promise<IAttendance> => {
     await dbConnect();
 
-    let finalPresentStudents: string[];
-    let totalStudents: number | undefined = data.totalStudents;
+    // Enforce non-bypassable roster validation against authenticated teacher's active roster
+    const rawInputs = [
+      ...(data.presentStudentIds || []),
+      ...(data.presentStudents || []),
+    ];
 
-    if (options?.validateRoster) {
-      const validated = await attendanceRepo.validateAndNormalizeRoster(
-        userId,
-        data.presentStudents || []
-      );
-      finalPresentStudents = validated.canonicalPresentStudents;
-      totalStudents = validated.totalStudents;
-    } else {
-      // Normalize raw entries to trimmed non-empty strings and deduplicate
-      finalPresentStudents = Array.from(
-        new Set(
-          (data.presentStudents || [])
-            .map((s) => String(s || '').trim())
-            .filter((s) => s.length > 0)
-        )
-      );
-      if (totalStudents === undefined) {
-        totalStudents = await Student.countDocuments({ userId }).exec();
-      }
-    }
+    const validated = await attendanceRepo.validateAndNormalizeRoster(
+      userId,
+      rawInputs,
+      internalContext?.preValidatedRoster
+    );
 
     let finalPhotoUrl = data.photoUrl || '';
     if (data.photoDataUri && data.photoDataUri.startsWith('data:image/')) {
@@ -464,11 +528,13 @@ export const attendanceRepo = {
       finalPhotoUrl = data.photoDataUri;
     }
 
+    // Persist with canonical stable student IDs and strictly server-derived totalStudents
     const newAttendance = await Attendance.create({
       userId,
-      date: new Date(data.date),
-      presentStudents: finalPresentStudents,
-      totalStudents,
+      date: new Date(data.date || new Date()),
+      presentStudentIds: validated.canonicalStudentIds,
+      presentStudents: validated.canonicalDisplayNames,
+      totalStudents: validated.totalStudents,
       photoUrl: finalPhotoUrl,
       photoDataUri: finalPhotoUrl,
     });
@@ -640,40 +706,89 @@ export const dashboardRepo = {
                   {
                     $min: [
                       {
-                        $size: {
-                          $setUnion: [
-                            {
-                              $filter: {
-                                input: {
-                                  $map: {
-                                    input: { $ifNull: ['$presentStudents', []] },
-                                    as: 'rawItem',
-                                    in: {
-                                      $cond: [
-                                        {
-                                          $or: [
-                                            { $eq: ['$$rawItem', null] },
-                                            { $eq: [{ $type: '$$rawItem' }, 'missing'] },
+                        $cond: [
+                          // Modern records with canonical stable presentStudentIds
+                          {
+                            $and: [
+                              { $ne: [{ $type: '$presentStudentIds' }, 'missing'] },
+                              { $ne: ['$presentStudentIds', null] },
+                              { $gt: [{ $size: '$presentStudentIds' }, 0] },
+                            ],
+                          },
+                          {
+                            $size: {
+                              $setUnion: [
+                                {
+                                  $filter: {
+                                    input: {
+                                      $map: {
+                                        input: '$presentStudentIds',
+                                        as: 'rawId',
+                                        in: {
+                                          $cond: [
+                                            {
+                                              $or: [
+                                                { $eq: ['$$rawId', null] },
+                                                { $eq: [{ $type: '$$rawId' }, 'missing'] },
+                                              ],
+                                            },
+                                            '',
+                                            { $trim: { input: { $toString: '$$rawId' } } },
                                           ],
                                         },
-                                        '',
-                                        { $trim: { input: { $toString: '$$rawItem' } } },
+                                      },
+                                    },
+                                    as: 'cleanId',
+                                    cond: {
+                                      $and: [
+                                        { $ne: ['$$cleanId', null] },
+                                        { $ne: ['$$cleanId', ''] },
                                       ],
                                     },
                                   },
                                 },
-                                as: 'cleanItem',
-                                cond: {
-                                  $and: [
-                                    { $ne: ['$$cleanItem', null] },
-                                    { $ne: ['$$cleanItem', ''] },
-                                  ],
-                                },
-                              },
+                                [],
+                              ],
                             },
-                            [],
-                          ],
-                        },
+                          },
+                          // Legacy records with presentStudents display names
+                          {
+                            $size: {
+                              $setUnion: [
+                                {
+                                  $filter: {
+                                    input: {
+                                      $map: {
+                                        input: { $ifNull: ['$presentStudents', []] },
+                                        as: 'rawItem',
+                                        in: {
+                                          $cond: [
+                                            {
+                                              $or: [
+                                                { $eq: ['$$rawItem', null] },
+                                                { $eq: [{ $type: '$$rawItem' }, 'missing'] },
+                                              ],
+                                            },
+                                            '',
+                                            { $trim: { input: { $toString: '$$rawItem' } } },
+                                          ],
+                                        },
+                                      },
+                                    },
+                                    as: 'cleanItem',
+                                    cond: {
+                                      $and: [
+                                        { $ne: ['$$cleanItem', null] },
+                                        { $ne: ['$$cleanItem', ''] },
+                                      ],
+                                    },
+                                  },
+                                },
+                                [],
+                              ],
+                            },
+                          },
+                        ],
                       },
                       '$totalStudents',
                     ],
