@@ -452,7 +452,7 @@ export const dashboardRepo = {
       // Bounded recent grades
       Grade.find({ userId })
         .sort({ date: -1, _id: -1 })
-        .limit(4)
+        .limit(6)
         .select('_id studentName subject grade date')
         .lean()
         .exec(),
@@ -470,7 +470,7 @@ export const dashboardRepo = {
       // Bounded recent calendar events
       CalendarEvent.find({ userId })
         .sort({ date: -1, _id: -1 })
-        .limit(4)
+        .limit(6)
         .select('_id title type date')
         .lean()
         .exec(),
@@ -481,7 +481,7 @@ export const dashboardRepo = {
       // Bounded recent recordings
       ClassRecording.find({ userId })
         .sort({ createdAt: -1, _id: -1 })
-        .limit(4)
+        .limit(6)
         .select('_id title createdAt')
         .lean()
         .exec(),
@@ -495,7 +495,7 @@ export const dashboardRepo = {
       // Bounded recent attendance
       Attendance.find({ userId })
         .sort({ date: -1, _id: -1 })
-        .limit(4)
+        .limit(6)
         .select('_id date presentStudents')
         .lean()
         .exec(),
