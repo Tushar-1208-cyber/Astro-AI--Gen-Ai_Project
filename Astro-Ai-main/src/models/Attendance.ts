@@ -5,6 +5,7 @@ export interface IAttendance extends Document {
   userId: string;
   date: Date;
   presentStudents: string[];
+  presentStudentIds?: string[];
   totalStudents?: number;
   photoUrl?: string;
   photoDataUri?: string;
@@ -27,6 +28,10 @@ const AttendanceSchema = new Schema<IAttendance>(
       default: Date.now,
     },
     presentStudents: {
+      type: [String],
+      default: [],
+    },
+    presentStudentIds: {
       type: [String],
       default: [],
     },
