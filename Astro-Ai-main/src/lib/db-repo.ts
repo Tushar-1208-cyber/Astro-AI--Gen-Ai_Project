@@ -345,7 +345,13 @@ export const attendanceRepo = {
 
   addAttendance: async (
     userId: string,
-    data: { date: Date | string; presentStudents: string[]; photoDataUri?: string; photoUrl?: string }
+    data: {
+      date: Date | string;
+      presentStudents: string[];
+      photoDataUri?: string;
+      photoUrl?: string;
+      totalStudents?: number;
+    }
   ): Promise<IAttendance> => {
     await dbConnect();
 
@@ -361,10 +367,17 @@ export const attendanceRepo = {
       finalPhotoUrl = data.photoDataUri;
     }
 
+    // Capture historical roster size snapshot at session creation time
+    let totalStudents = data.totalStudents;
+    if (totalStudents === undefined) {
+      totalStudents = await Student.countDocuments({ userId }).exec();
+    }
+
     const newAttendance = await Attendance.create({
       userId,
       date: new Date(data.date),
       presentStudents: data.presentStudents || [],
+      totalStudents,
       photoUrl: finalPhotoUrl,
       photoDataUri: finalPhotoUrl,
     });
@@ -423,7 +436,7 @@ export const dashboardRepo = {
 
     // 1. Parallel collection queries with projections and aggregations
     const [
-      activeStudents,
+      totalStudents,
       gradeAggregation,
       recentGrades,
       upcomingEventsCount,
@@ -431,15 +444,11 @@ export const dashboardRepo = {
       recentEvents,
       recordingsCount,
       recentRecordings,
-      totalAttendanceSessionsCount,
-      attendanceSessions,
+      attendanceSummary,
       recentAttendance,
     ] = await Promise.all([
-      // Active students projection (only name and createdAt for historical roster validation; no photos)
-      Student.find({ userId })
-        .select('_id name createdAt')
-        .lean()
-        .exec(),
+      // Total active students count (fast index count; zero unbounded document serialization)
+      Student.countDocuments({ userId }).exec(),
 
       // Grade statistics aggregation
       Grade.aggregate([
@@ -490,16 +499,68 @@ export const dashboardRepo = {
         .lean()
         .exec(),
 
-      // Total attendance sessions count via fast index scan
-      Attendance.countDocuments({ userId }).exec(),
+      // Scalable Attendance aggregation: computes session count, verified denominators, and unique attendance directly in MongoDB
+      Attendance.aggregate([
+        { $match: { userId } },
+        {
+          $group: {
+            _id: null,
+            totalSessions: { $sum: 1 },
+            sessionsWithDenominator: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: [{ $type: '$totalStudents' }, 'missing'] },
+                      { $ne: ['$totalStudents', null] },
+                      { $gt: ['$totalStudents', 0] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            sumDenominator: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: [{ $type: '$totalStudents' }, 'missing'] },
+                      { $ne: ['$totalStudents', null] },
+                      { $gt: ['$totalStudents', 0] },
+                    ],
+                  },
+                  '$totalStudents',
+                  0,
+                ],
+              },
+            },
+            sumPresent: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: [{ $type: '$totalStudents' }, 'missing'] },
+                      { $ne: ['$totalStudents', null] },
+                      { $gt: ['$totalStudents', 0] },
+                    ],
+                  },
+                  {
+                    $min: [
+                      { $size: { $setUnion: [{ $ifNull: ['$presentStudents', []] }, []] } },
+                      '$totalStudents',
+                    ],
+                  },
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]).exec(),
 
-      // Attendance sessions projection: only date and presentStudents
-      Attendance.find({ userId })
-        .select('date presentStudents')
-        .lean()
-        .exec(),
-
-      // Bounded recent attendance
+      // Bounded recent attendance (strictly limited to 6 records)
       Attendance.find({ userId })
         .sort({ date: -1, _id: -1 })
         .limit(6)
@@ -514,86 +575,30 @@ export const dashboardRepo = {
     const hasGrades = totalGrades > 0 && avgGradeRaw !== null && !isNaN(avgGradeRaw);
     const averageGrade = hasGrades ? Math.min(100, Math.max(0, Math.round(avgGradeRaw))) : null;
 
-    // 3. Attendance rate calculation with historical roster reconstruction
-    const totalStudents = activeStudents.length;
-    const totalAttendanceSessions = totalAttendanceSessionsCount;
+    // 3. Attendance rate calculation via scalable MongoDB aggregation
+    const attData =
+      attendanceSummary.length > 0
+        ? attendanceSummary[0]
+        : { totalSessions: 0, sessionsWithDenominator: 0, sumDenominator: 0, sumPresent: 0 };
+
+    const totalAttendanceSessions = attData.totalSessions;
     const hasAttendance = totalAttendanceSessions > 0;
     let attendanceRate: number | null = null;
 
-    if (hasAttendance && totalStudents > 0) {
-      const validStudentNames = new Set(
-        activeStudents
-          .map((s) => (typeof s.name === 'string' ? s.name.trim() : ''))
-          .filter((n) => n.length > 0)
+    // Denominator integrity rule:
+    // Attendance rate can ONLY be computed if EVERY session has an established, persisted historical denominator.
+    // If any session lacks reliable historical roster information (e.g. legacy session without snapshot,
+    // or where absent/present students could have been deleted without trace), return attendanceRate: null.
+    const allSessionsHaveIntegrity =
+      hasAttendance && attData.sessionsWithDenominator === totalAttendanceSessions;
+
+    if (allSessionsHaveIntegrity && attData.sumDenominator > 0) {
+      attendanceRate = Math.min(
+        100,
+        Math.max(0, Math.round((attData.sumPresent / attData.sumDenominator) * 100))
       );
-
-      let denominatorUnavailable = false;
-      let totalPossibleAttendance = 0;
-      let totalActualPresent = 0;
-
-      for (const session of attendanceSessions) {
-        const sessionDate = session.date instanceof Date ? session.date : new Date(session.date);
-        if (isNaN(sessionDate.getTime())) {
-          denominatorUnavailable = true;
-          break;
-        }
-
-        const rawPresent = Array.isArray(session.presentStudents) ? session.presentStudents : [];
-        const uniquePresent = Array.from(
-          new Set(
-            rawPresent
-              .map((s: any) => (typeof s === 'string' ? s.trim() : ''))
-              .filter((s: string) => s.length > 0)
-          )
-        );
-
-        // Strict rule: Never count unknown or unrelated student names without validation.
-        // If any present student is not in active roster (e.g. removed after session),
-        // historical roster size cannot be reconstructed -> explicit null state.
-        const hasUnknownPresentStudent = uniquePresent.some((name) => !validStudentNames.has(name));
-        if (hasUnknownPresentStudent) {
-          denominatorUnavailable = true;
-          break;
-        }
-
-        // Determine eligible students enrolled on or before session date (with 1000ms clock tolerance)
-        const sessionThreshold = sessionDate.getTime() + 1000;
-        const eligibleStudentsAtSession = activeStudents.filter((s) => {
-          const createdAt = s.createdAt instanceof Date ? s.createdAt : new Date(s.createdAt);
-          return !isNaN(createdAt.getTime()) && createdAt.getTime() <= sessionThreshold;
-        });
-
-        // If no active students existed at the time of the session, denominator is unavailable.
-        if (eligibleStudentsAtSession.length === 0) {
-          denominatorUnavailable = true;
-          break;
-        }
-
-        // Verify present students were actually enrolled at session time
-        const eligibleNames = new Set(
-          eligibleStudentsAtSession.map((s) => (typeof s.name === 'string' ? s.name.trim() : ''))
-        );
-        const hasUnenrolledPresentStudent = uniquePresent.some((name) => !eligibleNames.has(name));
-        if (hasUnenrolledPresentStudent) {
-          denominatorUnavailable = true;
-          break;
-        }
-
-        const sessionDenominator = eligibleStudentsAtSession.length;
-        const sessionPresent = Math.min(uniquePresent.length, sessionDenominator);
-
-        totalPossibleAttendance += sessionDenominator;
-        totalActualPresent += sessionPresent;
-      }
-
-      if (!denominatorUnavailable && totalPossibleAttendance > 0) {
-        attendanceRate = Math.min(
-          100,
-          Math.max(0, Math.round((totalActualPresent / totalPossibleAttendance) * 100))
-        );
-      } else {
-        attendanceRate = null;
-      }
+    } else {
+      attendanceRate = null;
     }
 
     // 4. Collate, format and sort recent activities
