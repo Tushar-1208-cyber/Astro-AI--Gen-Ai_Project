@@ -211,13 +211,13 @@ async function runDashboardTests() {
     }
 
     // -------------------------------------------------------------
-    // Scenario 8: Historical roster denominator capping (prevents overflow > 100%)
+    // Scenario 8: Students removed after historical session (unavailable denominator yields attendanceRate: null)
     // -------------------------------------------------------------
     const overflowUserId = `overflow_user_${timestamp}`;
     try {
       // 1 registered student currently
       await Student.create([{ userId: overflowUserId, name: 'Student 1' }]);
-      // Historical session had 3 students (before 2 students were deleted)
+      // Historical session had students who were subsequently removed from roster
       await Attendance.create([{
         userId: overflowUserId,
         date: new Date(),
@@ -225,12 +225,13 @@ async function runDashboardTests() {
       }]);
 
       const stats = await dashboardRepo.getDashboardMetrics(overflowUserId);
-      // Present count is capped at current totalStudents (1) so rate cannot exceed 100%
-      const passed = stats.attendanceRate !== null && stats.attendanceRate <= 100;
-      record(8, 'DASH-08', 'Historical roster denominator capping (prevents overflow > 100%)', passed,
-        `Capped rate: ${stats.attendanceRate}% (Guaranteed <= 100%)`);
+      // Because 'Deleted Student A' and 'Deleted Student B' no longer exist in the roster,
+      // the historical denominator cannot be reconstructed reliably -> returns attendanceRate: null
+      const passed = stats.hasAttendance === true && stats.attendanceRate === null;
+      record(8, 'DASH-08', 'Students removed after historical session sets attendanceRate: null', passed,
+        `hasAttendance: ${stats.hasAttendance}, attendanceRate: ${stats.attendanceRate} (Expected null)`);
     } catch (e: any) {
-      record(8, 'DASH-08', 'Historical roster denominator capping (prevents overflow > 100%)', false, e.message);
+      record(8, 'DASH-08', 'Students removed after historical session sets attendanceRate: null', false, e.message);
     }
 
     // -------------------------------------------------------------
@@ -400,6 +401,171 @@ async function runDashboardTests() {
         `Upcoming: ${stats.upcomingEvents} (Expected 2), LessonsThisMonth: ${stats.lessonsThisMonth} (Expected 1)`);
     } catch (e: any) {
       record(17, 'DASH-17', 'Upcoming event filtering (future events counted, past events excluded)', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 18: Students added after a historical session (reconstructed denominator excludes future students)
+    // -------------------------------------------------------------
+    const addedLaterUserId = `added_later_user_${timestamp}`;
+    try {
+      const day1 = new Date(Date.now() - 86400000 * 2); // 2 days ago
+      const day2 = new Date(Date.now() - 86400000 * 1); // 1 day ago (session date)
+      const day3 = new Date(); // Today (student 2 added today)
+
+      // Student 1 created on Day 1
+      await Student.create([{ userId: addedLaterUserId, name: 'Student Alpha', createdAt: day1 }]);
+
+      // Attendance session on Day 2 with Student Alpha present (only student enrolled on Day 2)
+      await Attendance.create([{
+        userId: addedLaterUserId,
+        date: day2,
+        presentStudents: ['Student Alpha'],
+      }]);
+
+      // Student 2 created on Day 3 (after the session)
+      await Student.create([{ userId: addedLaterUserId, name: 'Student Beta', createdAt: day3 }]);
+
+      const stats = await dashboardRepo.getDashboardMetrics(addedLaterUserId);
+      // Total active students today is 2. But on Day 2, only Student Alpha was enrolled.
+      // Denominator for Day 2 is 1 (not 2). Student Alpha was present -> 1/1 = 100%!
+      const passed = stats.totalStudents === 2 && stats.attendanceRate === 100;
+      record(18, 'DASH-18', 'Students added after historical session excluded from earlier session denominator', passed,
+        `totalStudents: ${stats.totalStudents}, attendanceRate: ${stats.attendanceRate}% (Expected 100%, not 50%)`);
+    } catch (e: any) {
+      record(18, 'DASH-18', 'Students added after historical session excluded from earlier session denominator', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 19: Unknown student name in attendance strictly sets attendanceRate: null
+    // -------------------------------------------------------------
+    const unknownStudentUserId = `unknown_student_user_${timestamp}`;
+    try {
+      await Student.create([{ userId: unknownStudentUserId, name: 'Known Student' }]);
+      await Attendance.create([{
+        userId: unknownStudentUserId,
+        date: new Date(),
+        presentStudents: ['Known Student', 'Unknown Intruder'],
+      }]);
+
+      const stats = await dashboardRepo.getDashboardMetrics(unknownStudentUserId);
+      const passed = stats.hasAttendance === true && stats.attendanceRate === null;
+      record(19, 'DASH-19', 'Unknown student in attendance record strictly sets attendanceRate: null', passed,
+        `hasAttendance: ${stats.hasAttendance}, attendanceRate: ${stats.attendanceRate} (Expected null)`);
+    } catch (e: any) {
+      record(19, 'DASH-19', 'Unknown student in attendance record strictly sets attendanceRate: null', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 20: Zero students with existing attendance sessions sets attendanceRate: null
+    // -------------------------------------------------------------
+    const zeroStudentsUserId = `zero_students_user_${timestamp}`;
+    try {
+      await Attendance.create([{
+        userId: zeroStudentsUserId,
+        date: new Date(),
+        presentStudents: ['Ghost Student'],
+      }]);
+
+      const stats = await dashboardRepo.getDashboardMetrics(zeroStudentsUserId);
+      const passed = stats.totalStudents === 0 && stats.hasAttendance === true && stats.attendanceRate === null;
+      record(20, 'DASH-20', 'Zero students with existing attendance session sets attendanceRate: null', passed,
+        `totalStudents: ${stats.totalStudents}, hasAttendance: ${stats.hasAttendance}, attendanceRate: ${stats.attendanceRate}`);
+    } catch (e: any) {
+      record(20, 'DASH-20', 'Zero students with existing attendance session sets attendanceRate: null', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 21: Unavailable historical denominator when session predates all active students
+    // -------------------------------------------------------------
+    const predatedUserId = `predated_user_${timestamp}`;
+    try {
+      const sessionDate = new Date('2020-01-01T00:00:00Z');
+      const studentCreatedDate = new Date('2026-01-01T00:00:00Z');
+
+      await Student.create([{ userId: predatedUserId, name: 'Future Student', createdAt: studentCreatedDate }]);
+      await Attendance.create([{
+        userId: predatedUserId,
+        date: sessionDate,
+        presentStudents: ['Future Student'],
+      }]);
+
+      const stats = await dashboardRepo.getDashboardMetrics(predatedUserId);
+      // Because session occurred years before any student was created, eligible denominator at session is 0
+      const passed = stats.hasAttendance === true && stats.attendanceRate === null;
+      record(21, 'DASH-21', 'Unavailable denominator when session predates student enrollment sets attendanceRate: null', passed,
+        `hasAttendance: ${stats.hasAttendance}, attendanceRate: ${stats.attendanceRate} (Expected null)`);
+    } catch (e: any) {
+      record(21, 'DASH-21', 'Unavailable denominator when session predates student enrollment sets attendanceRate: null', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 22: Lessons this month strictly filters canonical 'Lesson' type (excludes Deadline, Event, Holiday)
+    // -------------------------------------------------------------
+    const lessonTypeUserId = `lesson_type_user_${timestamp}`;
+    try {
+      const now = new Date();
+      await CalendarEvent.create([
+        { userId: lessonTypeUserId, title: 'Math Lesson', date: now, type: 'Lesson' },
+        { userId: lessonTypeUserId, title: 'Science Exam Deadline', date: now, type: 'Deadline' },
+        { userId: lessonTypeUserId, title: 'School Assembly Event', date: now, type: 'Event' },
+        { userId: lessonTypeUserId, title: 'National Holiday', date: now, type: 'Holiday' },
+      ]);
+
+      const stats = await dashboardRepo.getDashboardMetrics(lessonTypeUserId);
+      // Only the 1 event with type 'Lesson' should be counted in lessonsThisMonth
+      const passed = stats.lessonsThisMonth === 1;
+      record(22, 'DASH-22', 'Lessons this month strictly counts Lesson and excludes Deadline, Event, Holiday', passed,
+        `lessonsThisMonth: ${stats.lessonsThisMonth} (Expected 1 out of 4 events)`);
+    } catch (e: any) {
+      record(22, 'DASH-22', 'Lessons this month strictly counts Lesson and excludes Deadline, Event, Holiday', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 23: Lessons this month respects calendar month boundaries
+    // -------------------------------------------------------------
+    const monthBoundaryUserId = `month_boundary_user_${timestamp}`;
+    try {
+      const now = new Date();
+      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 15);
+      const thisMonth = new Date(now.getFullYear(), now.getMonth(), 15);
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 15);
+
+      await CalendarEvent.create([
+        { userId: monthBoundaryUserId, title: 'Last Month Lesson', date: lastMonth, type: 'Lesson' },
+        { userId: monthBoundaryUserId, title: 'This Month Lesson', date: thisMonth, type: 'Lesson' },
+        { userId: monthBoundaryUserId, title: 'Next Month Lesson', date: nextMonth, type: 'Lesson' },
+      ]);
+
+      const stats = await dashboardRepo.getDashboardMetrics(monthBoundaryUserId);
+      // Only the lesson within the current month should be counted
+      const passed = stats.lessonsThisMonth === 1;
+      record(23, 'DASH-23', 'Lessons this month excludes lessons from previous and future months', passed,
+        `lessonsThisMonth: ${stats.lessonsThisMonth} (Expected 1 out of 3 lessons)`);
+    } catch (e: any) {
+      record(23, 'DASH-23', 'Lessons this month excludes lessons from previous and future months', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 24: Multi-tenant lesson event isolation (User A cannot see User B's lessons)
+    // -------------------------------------------------------------
+    const userA_LessonId = `userA_lesson_${timestamp}`;
+    const userB_LessonId = `userB_lesson_${timestamp}`;
+    try {
+      const now = new Date();
+      await CalendarEvent.create([
+        { userId: userA_LessonId, title: 'User A Lesson 1', date: now, type: 'Lesson' },
+        { userId: userA_LessonId, title: 'User A Lesson 2', date: now, type: 'Lesson' },
+        { userId: userB_LessonId, title: 'User B Lesson 1', date: now, type: 'Lesson' },
+      ]);
+
+      const statsA = await dashboardRepo.getDashboardMetrics(userA_LessonId);
+      const statsB = await dashboardRepo.getDashboardMetrics(userB_LessonId);
+
+      const passed = statsA.lessonsThisMonth === 2 && statsB.lessonsThisMonth === 1;
+      record(24, 'DASH-24', 'Multi-tenant lesson event isolation verified across distinct users', passed,
+        `User A: ${statsA.lessonsThisMonth} lessons (Expected 2), User B: ${statsB.lessonsThisMonth} lessons (Expected 1)`);
+    } catch (e: any) {
+      record(24, 'DASH-24', 'Multi-tenant lesson event isolation verified across distinct users', false, e.message);
     }
 
   } finally {
