@@ -132,6 +132,9 @@ async function runTestSuite() {
     // TEST 3: Attendance CRUD
     // -------------------------------------------------------------
     try {
+      const s1 = await studentRepo.addStudent(userAId, { name: 'Student 1', class: '10' });
+      const s2 = await studentRepo.addStudent(userAId, { name: 'Student 2', class: '10' });
+
       const created = await attendanceRepo.addAttendance(userAId, {
         date: new Date(),
         presentStudents: ['Student 1', 'Student 2'],
@@ -139,6 +142,9 @@ async function runTestSuite() {
       const list = await attendanceRepo.getAttendance(userAId);
       const exists = list.some((a) => a.id === created.id || a._id.toString() === created._id.toString());
       const deleted = await attendanceRepo.deleteAttendance(userAId, created.id);
+
+      await studentRepo.deleteStudent(userAId, s1.id);
+      await studentRepo.deleteStudent(userAId, s2.id);
 
       recordTest(3, 'Attendance CRUD operations (MongoDB)', exists && deleted, 'Created, verified in list, and deleted.');
     } catch (err: any) {
