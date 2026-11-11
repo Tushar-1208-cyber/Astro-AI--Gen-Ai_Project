@@ -305,7 +305,9 @@ export default function DashboardPage() {
             </div>
             <p className="text-xs text-muted-foreground">
               {stats.hasAttendance
-                ? (stats.attendanceRate !== null && stats.attendanceRate >= 80 ? 'Excellent' : 'Needs improvement')
+                ? (stats.attendanceRate !== null
+                    ? (stats.attendanceRate >= 80 ? 'Excellent' : 'Needs improvement')
+                    : 'Historical roster unavailable')
                 : 'No attendance recorded yet'}
             </p>
           </CardContent>
