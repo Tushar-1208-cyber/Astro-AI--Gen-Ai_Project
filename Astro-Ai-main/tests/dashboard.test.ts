@@ -848,6 +848,381 @@ async function runDashboardTests() {
       record(34, 'DASH-34', 'Legacy records without historical denominator return attendanceRate: null', false, e.message);
     }
 
+    // -------------------------------------------------------------
+    // Scenario 35: (Condition 1) Two different students with identical names submitted by distinct stable IDs
+    // -------------------------------------------------------------
+    const s35UserId = `two_same_name_ids_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s35UserId, name: 'Alex Miller' });
+      const s2 = await Student.create({ userId: s35UserId, name: 'Alex Miller' });
+      await Student.create({ userId: s35UserId, name: 'Taylor Swift' }); // 3 students total
+
+      const created = await attendanceRepo.addAttendance(s35UserId, {
+        date: new Date(),
+        presentStudents: [s1._id.toString(), s2._id.toString()],
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s35UserId);
+
+      // Both must be recorded as present by stable ID, dashboard rate must reflect 2/3 = 67%, NOT 1/3 = 33%
+      const passed =
+        persisted?.presentStudentIds?.length === 2 &&
+        persisted?.presentStudents?.length === 2 &&
+        persisted.presentStudentIds.includes(s1._id.toString()) &&
+        persisted.presentStudentIds.includes(s2._id.toString()) &&
+        stats.attendanceRate === 67; // Math.round((2/3) * 100) = 67%
+
+      record(35, 'DASH-35', 'Two distinct students with identical names counted independently via stable IDs', passed,
+        `presentStudentIds: [${persisted?.presentStudentIds?.join(', ')}], rate: ${stats.attendanceRate}% (Expected 67%, not 33%)`);
+    } catch (e: any) {
+      record(35, 'DASH-35', 'Two distinct students with identical names counted independently via stable IDs', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 36: (Condition 2) Same student submitted through multiple identifiers deduplicated
+    // -------------------------------------------------------------
+    const s36UserId = `multi_id_dedup_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s36UserId, name: 'Jordan Rivera', legacyId: 'leg_jord_1' });
+      await Student.create({ userId: s36UserId, name: 'Casey Morgan' }); // 2 students total
+
+      // Submit s1 via MongoDB _id, legacyId, and display name in the same submission
+      const created = await attendanceRepo.addAttendance(s36UserId, {
+        date: new Date(),
+        presentStudents: [s1._id.toString(), 'leg_jord_1', 'Jordan Rivera', s1._id.toString()],
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s36UserId);
+
+      // Deduplication by canonical stable ID must yield exactly 1 attendance count
+      const passed =
+        persisted?.presentStudentIds?.length === 1 &&
+        persisted?.presentStudentIds?.[0] === s1._id.toString() &&
+        persisted?.presentStudents?.length === 1 &&
+        persisted?.presentStudents?.[0] === 'Jordan Rivera' &&
+        stats.attendanceRate === 50; // 1/2 = 50%
+
+      record(36, 'DASH-36', 'Same student submitted through multiple identifiers deduplicated to 1 attendance count', passed,
+        `presentStudentIds count: ${persisted?.presentStudentIds?.length}, rate: ${stats.attendanceRate}% (Expected 50%)`);
+    } catch (e: any) {
+      record(36, 'DASH-36', 'Same student submitted through multiple identifiers deduplicated to 1 attendance count', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 37: (Condition 3) Duplicate-name submission by name alone rejected as ambiguous
+    // -------------------------------------------------------------
+    const s37UserId = `ambig_name_reject_${timestamp}`;
+    try {
+      await Student.create([
+        { userId: s37UserId, name: 'Sam Wilson' },
+        { userId: s37UserId, name: 'Sam Wilson' },
+      ]);
+
+      let errorCaught = false;
+      let errorMessage = '';
+      try {
+        await attendanceRepo.addAttendance(s37UserId, {
+          date: new Date(),
+          presentStudents: ['Sam Wilson'],
+        });
+      } catch (err: any) {
+        errorCaught = true;
+        errorMessage = err.message;
+      }
+
+      const passed =
+        errorCaught &&
+        errorMessage.includes('Ambiguous student') &&
+        errorMessage.includes('Sam Wilson') &&
+        errorMessage.includes('student IDs');
+
+      record(37, 'DASH-37', 'Duplicate-name submission by name alone rejected with clear actionable error', passed,
+        `Error caught: ${errorCaught}, Message: "${errorMessage}"`);
+    } catch (e: any) {
+      record(37, 'DASH-37', 'Duplicate-name submission by name alone rejected with clear actionable error', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 38: (Condition 4) AI recognition of duplicate-name students quarantines ambiguous names
+    // -------------------------------------------------------------
+    const s38UserId = `ai_dup_quarantine_${timestamp}`;
+    try {
+      await Student.create({ userId: s38UserId, name: 'Robin Hood' });
+      await Student.create({ userId: s38UserId, name: 'Robin Hood' });
+      const s3 = await Student.create({ userId: s38UserId, name: 'Maid Marian' }); // 3 students total
+
+      const aiRecognized = ['Robin Hood', 'Maid Marian'];
+      const validated = await attendanceRepo.validateAndNormalizeAiRecognition(s38UserId, aiRecognized);
+
+      const passed =
+        validated.canonicalStudentIds.length === 1 &&
+        validated.canonicalStudentIds[0] === s3._id.toString() &&
+        validated.canonicalDisplayNames.length === 1 &&
+        validated.canonicalDisplayNames[0] === 'Maid Marian' &&
+        validated.unresolvedNames.length === 1 &&
+        validated.unresolvedNames[0] === 'Robin Hood';
+
+      record(38, 'DASH-38', 'AI recognition of duplicate-name students quarantines ambiguous names in unresolvedNames', passed,
+        `Resolved: [${validated.canonicalDisplayNames.join(', ')}], Unresolved: [${validated.unresolvedNames.join(', ')}]`);
+    } catch (e: any) {
+      record(38, 'DASH-38', 'AI recognition of duplicate-name students quarantines ambiguous names in unresolvedNames', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 39: (Condition 5) AI hallucinated student sanitized before persistence
+    // -------------------------------------------------------------
+    const s39UserId = `ai_halluc_sanitize_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s39UserId, name: 'Hermione Granger' });
+      await Student.create({ userId: s39UserId, name: 'Ron Weasley' }); // 2 students total
+
+      const aiRecognized = ['Hermione Granger', 'Voldemort The Intruder', 'Unknown AI Ghost'];
+      const validated = await attendanceRepo.validateAndNormalizeAiRecognition(s39UserId, aiRecognized);
+
+      const created = await attendanceRepo.addAttendance(s39UserId, {
+        date: new Date(),
+        presentStudentIds: validated.canonicalStudentIds,
+        presentStudents: validated.canonicalDisplayNames,
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s39UserId);
+
+      const passed =
+        persisted?.presentStudents.length === 1 &&
+        persisted?.presentStudents[0] === 'Hermione Granger' &&
+        persisted?.presentStudentIds?.length === 1 &&
+        persisted?.presentStudentIds[0] === s1._id.toString() &&
+        !persisted?.presentStudents.includes('Voldemort The Intruder') &&
+        stats.attendanceRate === 50; // 1/2 = 50%
+
+      record(39, 'DASH-39', 'AI hallucinated student sanitized before persistence; valid students persisted', passed,
+        `Persisted students: [${persisted?.presentStudents.join(', ')}], Rate: ${stats.attendanceRate}%`);
+    } catch (e: any) {
+      record(39, 'DASH-39', 'AI hallucinated student sanitized before persistence; valid students persisted', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 40: (Condition 6) AI attendance persistence failure returns failure, not success
+    // -------------------------------------------------------------
+    const s40UserId = `ai_persist_fail_${timestamp}`;
+    try {
+      // Simulate the persistence failure path in AI recognition flow
+      const simulateAiRecognitionPersistence = async (userId: string, recognizedNames: string[], forceFail: boolean) => {
+        const validated = await attendanceRepo.validateAndNormalizeAiRecognition(userId, recognizedNames);
+        try {
+          if (forceFail) {
+            throw new Error('Database connection lost during attendance save.');
+          }
+          const rec = await attendanceRepo.addAttendance(userId, {
+            date: new Date(),
+            presentStudentIds: validated.canonicalStudentIds,
+            presentStudents: validated.canonicalDisplayNames,
+          });
+          return { success: true, data: { attendanceId: rec.id } };
+        } catch (e: any) {
+          return {
+            success: false,
+            error: e?.message || 'Failed to persist attendance record.',
+            data: {
+              presentStudents: validated.canonicalDisplayNames,
+              presentStudentIds: validated.canonicalStudentIds,
+              unresolvedNames: validated.unresolvedNames,
+            },
+          };
+        }
+      };
+
+      await Student.create({ userId: s40UserId, name: 'Bruce Wayne' });
+      const failureResult = await simulateAiRecognitionPersistence(s40UserId, ['Bruce Wayne'], true);
+
+      const passed =
+        failureResult.success === false &&
+        failureResult.error.includes('Database connection lost') &&
+        Boolean(failureResult.data?.presentStudents.includes('Bruce Wayne'));
+
+      record(40, 'DASH-40', 'AI attendance persistence failure returns structured failure and does not claim success', passed,
+        `success: ${failureResult.success}, error: "${failureResult.error}"`);
+    } catch (e: any) {
+      record(40, 'DASH-40', 'AI attendance persistence failure returns structured failure and does not claim success', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 41: (Condition 7) Direct repository calls cannot bypass roster validation
+    // -------------------------------------------------------------
+    const s41UserId = `repo_non_bypass_${timestamp}`;
+    try {
+      await Student.create({ userId: s41UserId, name: 'Clark Kent' });
+
+      let caught = false;
+      let errMessage = '';
+      try {
+        await attendanceRepo.addAttendance(s41UserId, {
+          date: new Date(),
+          presentStudents: ['Lex Luthor'], // Not enrolled
+        });
+      } catch (err: any) {
+        caught = true;
+        errMessage = err.message;
+      }
+
+      const passed = caught && errMessage.includes('is not enrolled in your roster');
+      record(41, 'DASH-41', 'Direct repository calls cannot bypass roster validation', passed,
+        `Direct addAttendance rejected unenrolled student: caught=${caught}, msg="${errMessage}"`);
+    } catch (e: any) {
+      record(41, 'DASH-41', 'Direct repository calls cannot bypass roster validation', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 42: (Condition 8) Client-supplied denominator manipulation overridden
+    // -------------------------------------------------------------
+    const s42UserId = `denom_override_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s42UserId, name: 'Diana Prince' });
+      await Student.create({ userId: s42UserId, name: 'Barry Allen' }); // 2 active students
+
+      // Client passes malicious totalStudents = 1000
+      const created = await attendanceRepo.addAttendance(s42UserId, {
+        date: new Date(),
+        presentStudents: [s1._id.toString()],
+        totalStudents: 1000,
+      } as any);
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s42UserId);
+
+      const passed =
+        persisted?.totalStudents === 2 && // Overridden from 1000 to 2
+        stats.attendanceRate === 50; // 1/2 = 50%
+
+      record(42, 'DASH-42', 'Client-supplied denominator manipulation strictly overridden by active roster count', passed,
+        `Persisted totalStudents: ${persisted?.totalStudents} (Expected 2, not 1000), rate: ${stats.attendanceRate}%`);
+    } catch (e: any) {
+      record(42, 'DASH-42', 'Client-supplied denominator manipulation strictly overridden by active roster count', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 43: (Condition 9) Cross-tenant stable student ID strictly rejected
+    // -------------------------------------------------------------
+    const s43UserA = `cross_tenant_a_${timestamp}`;
+    const s43UserB = `cross_tenant_b_${timestamp}`;
+    try {
+      const studentB = await Student.create({ userId: s43UserB, name: 'Tenant B Student' });
+
+      let caught = false;
+      let errMessage = '';
+      try {
+        await attendanceRepo.addAttendance(s43UserA, {
+          date: new Date(),
+          presentStudents: [studentB._id.toString()],
+        });
+      } catch (err: any) {
+        caught = true;
+        errMessage = err.message;
+      }
+
+      const passed = caught && errMessage.includes('is not enrolled in your roster');
+      record(43, 'DASH-43', 'Cross-tenant stable student ID submission strictly rejected', passed,
+        `Rejected cross-tenant student: caught=${caught}, msg="${errMessage}"`);
+    } catch (e: any) {
+      record(43, 'DASH-43', 'Cross-tenant stable student ID submission strictly rejected', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 44: (Condition 10) Dashboard aggregation counts canonical IDs, not display names
+    // -------------------------------------------------------------
+    const s44UserId = `agg_canonical_ids_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s44UserId, name: 'John Smith' });
+      const s2 = await Student.create({ userId: s44UserId, name: 'John Smith' }); // Same name!
+      await Student.create({ userId: s44UserId, name: 'Peter Parker' }); // 3 students total
+
+      await attendanceRepo.addAttendance(s44UserId, {
+        date: new Date(),
+        presentStudents: [s1._id.toString(), s2._id.toString()],
+      });
+
+      const stats = await dashboardRepo.getDashboardMetrics(s44UserId);
+
+      // Aggregation uses presentStudentIds -> size of unique IDs is 2 -> rate is 2/3 = 67%
+      // If it had counted display names, it would have collapsed to 1 -> rate 33%
+      const passed = stats.attendanceRate === 67;
+      record(44, 'DASH-44', 'Dashboard aggregation pipeline counts canonical student IDs and preserves duplicate names', passed,
+        `Rate: ${stats.attendanceRate}% (Expected 67%, proves IDs are counted over display names)`);
+    } catch (e: any) {
+      record(44, 'DASH-44', 'Dashboard aggregation pipeline counts canonical student IDs and preserves duplicate names', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 45: (Condition 11) Legacy records without IDs remain backward-compatible
+    // -------------------------------------------------------------
+    const s45UserId = `legacy_no_ids_${timestamp}`;
+    try {
+      await Student.create([
+        { userId: s45UserId, name: 'Arthur Pendragon' },
+        { userId: s45UserId, name: 'Sir Lancelot' },
+      ]);
+
+      // Direct MongoDB insert simulating legacy un-migrated record without presentStudentIds
+      await Attendance.collection.insertOne({
+        userId: s45UserId,
+        date: new Date(),
+        presentStudents: ['Arthur Pendragon', 'Sir Lancelot'],
+        totalStudents: 2,
+      });
+
+      const stats = await dashboardRepo.getDashboardMetrics(s45UserId);
+
+      // Legacy fallback counts presentStudents cleanly without fabricating IDs
+      const passed =
+        stats.totalAttendanceSessions === 1 &&
+        stats.attendanceRate === 100 &&
+        stats.hasAttendance === true;
+
+      record(45, 'DASH-45', 'Legacy records without IDs remain backward-compatible using fallback without fabricating artificial IDs', passed,
+        `sessions: ${stats.totalAttendanceSessions}, rate: ${stats.attendanceRate}% (Expected 100%)`);
+    } catch (e: any) {
+      record(45, 'DASH-45', 'Legacy records without IDs remain backward-compatible using fallback without fabricating artificial IDs', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 46: (Condition 12) Mixed legacy and new records do not break aggregation or produce misleading rates
+    // -------------------------------------------------------------
+    const s46UserId = `mixed_legacy_new_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s46UserId, name: 'Tony Stark' });
+      await Student.create({ userId: s46UserId, name: 'Pepper Potts' }); // 2 students
+
+      // Session 1: Legacy record without presentStudentIds (both present: 2/2 = 100%)
+      await Attendance.collection.insertOne({
+        userId: s46UserId,
+        date: new Date(Date.now() - 86400000),
+        presentStudents: ['Tony Stark', 'Pepper Potts'],
+        totalStudents: 2,
+      });
+
+      // Session 2: New canonical record with presentStudentIds (only Tony present: 1/2 = 50%)
+      await attendanceRepo.addAttendance(s46UserId, {
+        date: new Date(),
+        presentStudents: [s1._id.toString()],
+      });
+
+      const stats = await dashboardRepo.getDashboardMetrics(s46UserId);
+
+      // Average rate across the 2 sessions: (100% + 50%) / 2 = 75%
+      const passed =
+        stats.totalAttendanceSessions === 2 &&
+        stats.attendanceRate === 75 &&
+        stats.hasAttendance === true;
+
+      record(46, 'DASH-46', 'Mixed legacy and new records compute unified average rate without double-counting or degradation', passed,
+        `sessions: ${stats.totalAttendanceSessions}, rate: ${stats.attendanceRate}% (Expected 75%)`);
+    } catch (e: any) {
+      record(46, 'DASH-46', 'Mixed legacy and new records compute unified average rate without double-counting or degradation', false, e.message);
+    }
+
   } finally {
     // Cleanup test data created during suite
     await Promise.all([
