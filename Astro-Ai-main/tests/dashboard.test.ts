@@ -1223,6 +1223,296 @@ async function runDashboardTests() {
       record(46, 'DASH-46', 'Mixed legacy and new records compute unified average rate without double-counting or degradation', false, e.message);
     }
 
+    // -------------------------------------------------------------
+    // Scenario 47: (DUP-01) Two duplicate-name students submitted with both IDs and display names
+    // -------------------------------------------------------------
+    const s47UserId = `two_dup_names_both_ids_names_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s47UserId, name: 'Alex Parker' });
+      const s2 = await Student.create({ userId: s47UserId, name: 'Alex Parker' });
+      await Student.create({ userId: s47UserId, name: 'Morgan Stanley' }); // 3 students total
+
+      const created = await attendanceRepo.addAttendance(s47UserId, {
+        date: new Date(),
+        presentStudentIds: [s1._id.toString(), s2._id.toString()],
+        presentStudents: ['Alex Parker', 'Alex Parker'],
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s47UserId);
+
+      const passed =
+        persisted?.presentStudentIds?.length === 2 &&
+        persisted?.presentStudentIds?.includes(s1._id.toString()) &&
+        persisted?.presentStudentIds?.includes(s2._id.toString()) &&
+        persisted?.presentStudents?.length === 2 &&
+        persisted?.presentStudents[0] === 'Alex Parker' &&
+        persisted?.presentStudents[1] === 'Alex Parker' &&
+        persisted?.totalStudents === 3 &&
+        stats.totalAttendanceSessions === 1 &&
+        stats.attendanceRate === 67; // 2/3 = 67%
+
+      record(47, 'DUP-01', 'Two duplicate-name students submitted with both IDs and display names accepted without duplicate-name rejection', passed,
+        `presentStudentIds: [${persisted?.presentStudentIds?.join(', ')}], presentStudents: [${persisted?.presentStudents.join(', ')}], totalStudents: ${persisted?.totalStudents}, rate: ${stats.attendanceRate}%`);
+    } catch (e: any) {
+      record(47, 'DUP-01', 'Two duplicate-name students submitted with both IDs and display names accepted without duplicate-name rejection', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 48: (DUP-02) Two duplicate-name students submitted with IDs only
+    // -------------------------------------------------------------
+    const s48UserId = `two_dup_names_ids_only_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s48UserId, name: 'Alex Parker' });
+      const s2 = await Student.create({ userId: s48UserId, name: 'Alex Parker' });
+      await Student.create({ userId: s48UserId, name: 'Morgan Stanley' }); // 3 students total
+
+      const created = await attendanceRepo.addAttendance(s48UserId, {
+        date: new Date(),
+        presentStudentIds: [s1._id.toString(), s2._id.toString()],
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s48UserId);
+
+      const passed =
+        persisted?.presentStudentIds?.length === 2 &&
+        persisted?.presentStudentIds?.includes(s1._id.toString()) &&
+        persisted?.presentStudentIds?.includes(s2._id.toString()) &&
+        persisted?.presentStudents?.length === 2 &&
+        persisted?.presentStudents[0] === 'Alex Parker' &&
+        persisted?.presentStudents[1] === 'Alex Parker' &&
+        persisted?.totalStudents === 3 &&
+        stats.totalAttendanceSessions === 1 &&
+        stats.attendanceRate === 67;
+
+      record(48, 'DUP-02', 'Two duplicate-name students submitted with IDs only derives display names and aggregates correctly', passed,
+        `presentStudentIds: [${persisted?.presentStudentIds?.join(', ')}], derived displayNames: [${persisted?.presentStudents.join(', ')}], rate: ${stats.attendanceRate}%`);
+    } catch (e: any) {
+      record(48, 'DUP-02', 'Two duplicate-name students submitted with IDs only derives display names and aggregates correctly', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 49: (DUP-03) Duplicate-name submission using names only is rejected
+    // -------------------------------------------------------------
+    const s49UserId = `dup_names_only_rejected_${timestamp}`;
+    try {
+      await Student.create([
+        { userId: s49UserId, name: 'Jordan Lee' },
+        { userId: s49UserId, name: 'Jordan Lee' },
+      ]);
+
+      let errorCaught = false;
+      let errorMessage = '';
+      try {
+        await attendanceRepo.addAttendance(s49UserId, {
+          date: new Date(),
+          presentStudents: ['Jordan Lee'],
+        });
+      } catch (err: any) {
+        errorCaught = true;
+        errorMessage = err.message;
+      }
+
+      const count = await Attendance.countDocuments({ userId: s49UserId });
+      const stats = await dashboardRepo.getDashboardMetrics(s49UserId);
+
+      const passed =
+        errorCaught &&
+        errorMessage.includes('Ambiguous student name') &&
+        errorMessage.includes('Jordan Lee') &&
+        count === 0 &&
+        stats.totalAttendanceSessions === 0 &&
+        stats.hasAttendance === false &&
+        stats.attendanceRate === null;
+
+      record(49, 'DUP-03', 'Duplicate-name submission using names only is rejected as ambiguous without persisting records', passed,
+        `Error caught: ${errorCaught}, Message: "${errorMessage}", persisted count: ${count}, hasAttendance: ${stats.hasAttendance}`);
+    } catch (e: any) {
+      record(49, 'DUP-03', 'Duplicate-name submission using names only is rejected as ambiguous without persisting records', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 50: (DUP-04) Same student supplied through ID and name is counted once
+    // -------------------------------------------------------------
+    const s50UserId = `same_student_id_name_once_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s50UserId, name: 'Taylor Swift' });
+      await Student.create({ userId: s50UserId, name: 'Selena Gomez' }); // 2 students total
+
+      const created = await attendanceRepo.addAttendance(s50UserId, {
+        date: new Date(),
+        presentStudentIds: [s1._id.toString()],
+        presentStudents: ['Taylor Swift'],
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s50UserId);
+
+      const passed =
+        persisted?.presentStudentIds?.length === 1 &&
+        persisted?.presentStudentIds[0] === s1._id.toString() &&
+        persisted?.presentStudents?.length === 1 &&
+        persisted?.presentStudents[0] === 'Taylor Swift' &&
+        persisted?.totalStudents === 2 &&
+        stats.totalAttendanceSessions === 1 &&
+        stats.attendanceRate === 50; // 1/2 = 50%, not double counted
+
+      record(50, 'DUP-04', 'Same student supplied through ID and name is counted exactly once', passed,
+        `presentStudentIds count: ${persisted?.presentStudentIds?.length}, rate: ${stats.attendanceRate}% (Expected 50%)`);
+    } catch (e: any) {
+      record(50, 'DUP-04', 'Same student supplied through ID and name is counted exactly once', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 51: (DUP-05) ID belonging to another teacher is rejected
+    // -------------------------------------------------------------
+    const s51TeacherA = `teacher_a_cross_${timestamp}`;
+    const s51TeacherB = `teacher_b_cross_${timestamp}`;
+    try {
+      await Student.create({ userId: s51TeacherA, name: 'Teacher A Student' });
+      const studentB = await Student.create({ userId: s51TeacherB, name: 'Teacher B Student' });
+
+      let errorCaught = false;
+      let errorMessage = '';
+      try {
+        await attendanceRepo.addAttendance(s51TeacherA, {
+          date: new Date(),
+          presentStudentIds: [studentB._id.toString()],
+        });
+      } catch (err: any) {
+        errorCaught = true;
+        errorMessage = err.message;
+      }
+
+      const count = await Attendance.countDocuments({ userId: s51TeacherA });
+      const stats = await dashboardRepo.getDashboardMetrics(s51TeacherA);
+
+      const passed =
+        errorCaught &&
+        errorMessage.includes('is not enrolled in your roster') &&
+        errorMessage.includes(studentB._id.toString()) &&
+        count === 0 &&
+        stats.totalAttendanceSessions === 0;
+
+      record(51, 'DUP-05', 'Student ID belonging to another teacher is rejected via cross-tenant protection', passed,
+        `Error caught: ${errorCaught}, Message: "${errorMessage}", persisted records: ${count}`);
+    } catch (e: any) {
+      record(51, 'DUP-05', 'Student ID belonging to another teacher is rejected via cross-tenant protection', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 52: (DUP-06) Conflicting ID/name pair is rejected
+    // -------------------------------------------------------------
+    const s52UserId = `conflict_id_name_pair_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s52UserId, name: 'Bruce Wayne' });
+      await Student.create({ userId: s52UserId, name: 'Clark Kent' });
+
+      let errorCaught = false;
+      let errorMessage = '';
+      try {
+        // s1's ID corresponds to Bruce Wayne, but display name supplied is Clark Kent
+        await attendanceRepo.addAttendance(s52UserId, {
+          date: new Date(),
+          presentStudentIds: [s1._id.toString()],
+          presentStudents: ['Clark Kent'],
+        });
+      } catch (err: any) {
+        errorCaught = true;
+        errorMessage = err.message;
+      }
+
+      const count = await Attendance.countDocuments({ userId: s52UserId });
+      const stats = await dashboardRepo.getDashboardMetrics(s52UserId);
+
+      const passed =
+        errorCaught &&
+        errorMessage.includes('Conflicting student identity') &&
+        errorMessage.includes('Bruce Wayne') &&
+        errorMessage.includes('Clark Kent') &&
+        count === 0 &&
+        stats.totalAttendanceSessions === 0;
+
+      record(52, 'DUP-06', 'Conflicting ID/name pair is strictly rejected without saving attendance', passed,
+        `Error caught: ${errorCaught}, Message: "${errorMessage}", count: ${count}`);
+    } catch (e: any) {
+      record(52, 'DUP-06', 'Conflicting ID/name pair is strictly rejected without saving attendance', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 53: (DUP-07) Normal unique-name submission remains compatible
+    // -------------------------------------------------------------
+    const s53UserId = `normal_unique_name_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: s53UserId, name: 'Peter Parker' });
+      const s2 = await Student.create({ userId: s53UserId, name: 'Tony Stark' });
+
+      const created = await attendanceRepo.addAttendance(s53UserId, {
+        date: new Date(),
+        presentStudents: ['Peter Parker', 'Tony Stark'],
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s53UserId);
+
+      const passed =
+        persisted?.presentStudentIds?.length === 2 &&
+        persisted?.presentStudentIds?.includes(s1._id.toString()) &&
+        persisted?.presentStudentIds?.includes(s2._id.toString()) &&
+        persisted?.presentStudents?.length === 2 &&
+        persisted?.totalStudents === 2 &&
+        stats.totalAttendanceSessions === 1 &&
+        stats.attendanceRate === 100;
+
+      record(53, 'DUP-07', 'Normal unique-name submission remains compatible and resolves canonical IDs', passed,
+        `presentStudentIds: [${persisted?.presentStudentIds?.join(', ')}], rate: ${stats.attendanceRate}% (Expected 100%)`);
+    } catch (e: any) {
+      record(53, 'DUP-07', 'Normal unique-name submission remains compatible and resolves canonical IDs', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 54: (DUP-08) AI recognition continues to quarantine ambiguous names
+    // -------------------------------------------------------------
+    const s54UserId = `ai_quarantine_ambig_${timestamp}`;
+    try {
+      await Student.create({ userId: s54UserId, name: 'Robin Hood' });
+      await Student.create({ userId: s54UserId, name: 'Robin Hood' });
+      const s3 = await Student.create({ userId: s54UserId, name: 'Maid Marian' }); // 3 students total
+
+      const aiRecognized = ['Robin Hood', 'Maid Marian', 'Phantom AI'];
+      const validated = await attendanceRepo.validateAndNormalizeAiRecognition(s54UserId, aiRecognized);
+
+      const created = await attendanceRepo.addAttendance(s54UserId, {
+        date: new Date(),
+        presentStudentIds: validated.canonicalStudentIds,
+        presentStudents: validated.canonicalDisplayNames,
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(s54UserId);
+
+      const passed =
+        validated.canonicalStudentIds.length === 1 &&
+        validated.canonicalStudentIds[0] === s3._id.toString() &&
+        validated.canonicalDisplayNames.length === 1 &&
+        validated.canonicalDisplayNames[0] === 'Maid Marian' &&
+        validated.unresolvedNames.length === 1 &&
+        validated.unresolvedNames[0] === 'Robin Hood' &&
+        persisted?.presentStudentIds?.length === 1 &&
+        persisted?.presentStudentIds[0] === s3._id.toString() &&
+        persisted?.presentStudents?.length === 1 &&
+        persisted?.presentStudents[0] === 'Maid Marian' &&
+        persisted?.totalStudents === 3 &&
+        stats.totalAttendanceSessions === 1 &&
+        stats.attendanceRate === 33; // 1/3 = 33%
+
+      record(54, 'DUP-08', 'AI recognition continues to quarantine ambiguous names in unresolvedNames without corrupting persistence', passed,
+        `Quarantined: [${validated.unresolvedNames.join(', ')}], Persisted students: [${persisted?.presentStudents.join(', ')}], rate: ${stats.attendanceRate}%`);
+    } catch (e: any) {
+      record(54, 'DUP-08', 'AI recognition continues to quarantine ambiguous names in unresolvedNames without corrupting persistence', false, e.message);
+    }
+
   } finally {
     // Cleanup test data created during suite
     await Promise.all([
