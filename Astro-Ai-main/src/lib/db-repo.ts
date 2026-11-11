@@ -387,3 +387,221 @@ export const attendanceRepo = {
     return result.deletedCount === 1;
   },
 };
+
+// ==========================================
+// 6. DASHBOARD REPOSITORY
+// ==========================================
+export interface DashboardActivityRecord {
+  id: string;
+  type: 'grade' | 'event' | 'recording' | 'attendance';
+  title: string;
+  date: Date;
+  metadata?: Record<string, any>;
+}
+
+export interface DashboardMetrics {
+  totalStudents: number;
+  totalGrades: number;
+  averageGrade: number | null;
+  hasGrades: boolean;
+  upcomingEvents: number;
+  totalRecordings: number;
+  lessonsThisMonth: number;
+  attendanceRate: number | null;
+  totalAttendanceSessions: number;
+  hasAttendance: boolean;
+  recentActivity: DashboardActivityRecord[];
+}
+
+export const dashboardRepo = {
+  getDashboardMetrics: async (userId: string): Promise<DashboardMetrics> => {
+    await dbConnect();
+
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    // 1. Parallel collection queries with projections and aggregations
+    const [
+      totalStudents,
+      gradeAggregation,
+      recentGrades,
+      upcomingEventsCount,
+      lessonsThisMonthCount,
+      recentEvents,
+      recordingsCount,
+      recentRecordings,
+      attendanceSessions,
+      recentAttendance,
+    ] = await Promise.all([
+      // Total students count (no photo or raw document serialization)
+      Student.countDocuments({ userId }).exec(),
+
+      // Grade statistics aggregation
+      Grade.aggregate([
+        { $match: { userId } },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            avgGrade: { $avg: '$grade' },
+          },
+        },
+      ]).exec(),
+
+      // Bounded recent grades
+      Grade.find({ userId })
+        .sort({ date: -1, _id: -1 })
+        .limit(4)
+        .select('_id studentName subject grade date')
+        .lean()
+        .exec(),
+
+      // Upcoming calendar events
+      CalendarEvent.countDocuments({ userId, date: { $gte: now } }).exec(),
+
+      // Lessons this month (calendar events of type 'Lesson')
+      CalendarEvent.countDocuments({
+        userId,
+        type: 'Lesson',
+        date: { $gte: startOfMonth, $lte: endOfMonth },
+      }).exec(),
+
+      // Bounded recent calendar events
+      CalendarEvent.find({ userId })
+        .sort({ date: -1, _id: -1 })
+        .limit(4)
+        .select('_id title type date')
+        .lean()
+        .exec(),
+
+      // Total recordings count
+      ClassRecording.countDocuments({ userId }).exec(),
+
+      // Bounded recent recordings
+      ClassRecording.find({ userId })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(4)
+        .select('_id title createdAt')
+        .lean()
+        .exec(),
+
+      // Attendance sessions (projection: only presentStudents count)
+      Attendance.find({ userId })
+        .select('presentStudents')
+        .lean()
+        .exec(),
+
+      // Bounded recent attendance
+      Attendance.find({ userId })
+        .sort({ date: -1, _id: -1 })
+        .limit(4)
+        .select('_id date presentStudents')
+        .lean()
+        .exec(),
+    ]);
+
+    // 2. Grade summary calculations
+    const totalGrades = gradeAggregation.length > 0 ? gradeAggregation[0].count : 0;
+    const avgGradeRaw = gradeAggregation.length > 0 ? gradeAggregation[0].avgGrade : null;
+    const hasGrades = totalGrades > 0 && avgGradeRaw !== null && !isNaN(avgGradeRaw);
+    const averageGrade = hasGrades ? Math.min(100, Math.max(0, Math.round(avgGradeRaw))) : null;
+
+    // 3. Attendance rate calculation
+    const totalAttendanceSessions = attendanceSessions.length;
+    const hasAttendance = totalAttendanceSessions > 0;
+    let attendanceRate: number | null = null;
+
+    if (hasAttendance && totalStudents > 0) {
+      const totalPossible = totalAttendanceSessions * totalStudents;
+      let totalValidatedPresent = 0;
+
+      for (const session of attendanceSessions) {
+        const rawPresent = Array.isArray(session.presentStudents) ? session.presentStudents : [];
+        const uniquePresent = new Set(
+          rawPresent
+            .map((s: any) => (typeof s === 'string' ? s.trim() : ''))
+            .filter((s: string) => s.length > 0)
+        ).size;
+        // Cap present count at totalStudents to prevent overflow from historical roster churn
+        totalValidatedPresent += Math.min(uniquePresent, totalStudents);
+      }
+
+      if (totalPossible > 0) {
+        attendanceRate = Math.min(100, Math.max(0, Math.round((totalValidatedPresent / totalPossible) * 100)));
+      }
+    }
+
+    // 4. Collate, format and sort recent activities
+    const recentActivity: DashboardActivityRecord[] = [];
+
+    for (const g of recentGrades) {
+      recentActivity.push({
+        id: (g._id || (g as any).id).toString(),
+        type: 'grade',
+        title: `Grade recorded for ${g.studentName} - ${g.subject} (${g.grade}%)`,
+        date: g.date instanceof Date ? g.date : new Date(g.date),
+        metadata: { studentName: g.studentName, subject: g.subject, grade: g.grade },
+      });
+    }
+
+    for (const e of recentEvents) {
+      recentActivity.push({
+        id: (e._id || (e as any).id).toString(),
+        type: 'event',
+        title: `${e.type}: ${e.title}`,
+        date: e.date instanceof Date ? e.date : new Date(e.date),
+        metadata: { eventType: e.type, title: e.title },
+      });
+    }
+
+    for (const r of recentRecordings) {
+      recentActivity.push({
+        id: (r._id || (r as any).id).toString(),
+        type: 'recording',
+        title: `Recording: ${r.title || 'Class Session'}`,
+        date: r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt),
+        metadata: { title: r.title },
+      });
+    }
+
+    for (const a of recentAttendance) {
+      const rawPresent = Array.isArray(a.presentStudents) ? a.presentStudents : [];
+      const presentCount = new Set(
+        rawPresent
+          .map((s: any) => (typeof s === 'string' ? s.trim() : ''))
+          .filter((s: string) => s.length > 0)
+      ).size;
+      recentActivity.push({
+        id: (a._id || (a as any).id).toString(),
+        type: 'attendance',
+        title: `Attendance session: ${presentCount} student(s) marked present`,
+        date: a.date instanceof Date ? a.date : new Date(a.date),
+        metadata: { presentCount },
+      });
+    }
+
+    // Deterministic sort: newest first, tie-breaker on id
+    recentActivity.sort((a, b) => {
+      const timeDiff = b.date.getTime() - a.date.getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return b.id.localeCompare(a.id);
+    });
+
+    const boundedRecentActivity = recentActivity.slice(0, 6);
+
+    return {
+      totalStudents,
+      totalGrades,
+      averageGrade,
+      hasGrades,
+      upcomingEvents: upcomingEventsCount,
+      totalRecordings: recordingsCount,
+      lessonsThisMonth: lessonsThisMonthCount,
+      attendanceRate,
+      totalAttendanceSessions,
+      hasAttendance,
+      recentActivity: boundedRecentActivity,
+    };
+  },
+};
