@@ -29,7 +29,7 @@ import {
   CheckCircle,
   AlertCircle
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
 import Link from "next/link";
 import { format, isToday, isTomorrow } from "date-fns";
@@ -37,14 +37,17 @@ import { format, isToday, isTomorrow } from "date-fns";
 interface DashboardStats {
   totalStudents: number;
   totalGrades: number;
-  averageGrade: number;
+  averageGrade: number | null;
+  hasGrades: boolean;
   upcomingEvents: number;
   totalRecordings: number;
   lessonsThisMonth: number;
-  attendanceRate: number;
+  attendanceRate: number | null;
+  totalAttendanceSessions: number;
+  hasAttendance: boolean;
   recentActivity: Array<{
     id: string;
-    type: 'lesson' | 'grade' | 'event' | 'recording';
+    type: 'lesson' | 'grade' | 'event' | 'recording' | 'attendance';
     title: string;
     date: Date;
     icon: any;
@@ -59,11 +62,14 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats>({
     totalStudents: 0,
     totalGrades: 0,
-    averageGrade: 0,
+    averageGrade: null,
+    hasGrades: false,
     upcomingEvents: 0,
     totalRecordings: 0,
     lessonsThisMonth: 0,
-    attendanceRate: 0,
+    attendanceRate: null,
+    totalAttendanceSessions: 0,
+    hasAttendance: false,
     recentActivity: []
   });
   const [isLoading, setIsLoading] = useState(true);
@@ -77,7 +83,29 @@ export default function DashboardPage() {
     return new Date();
   };
 
-  const fetchDashboardData = async () => {
+  const getActivityIcon = (type: string) => {
+    switch (type) {
+      case 'grade': return BarChart3;
+      case 'event': return Calendar;
+      case 'recording': return Video;
+      case 'attendance': return CheckCircle;
+      case 'lesson': return BookOpen;
+      default: return Activity;
+    }
+  };
+
+  const getActivityColor = (type: string) => {
+    switch (type) {
+      case 'grade': return 'text-green-600';
+      case 'event': return 'text-blue-600';
+      case 'recording': return 'text-purple-600';
+      case 'attendance': return 'text-emerald-600';
+      case 'lesson': return 'text-indigo-600';
+      default: return 'text-gray-600';
+    }
+  };
+
+  const fetchDashboardData = useCallback(async () => {
     if (authStatus !== 'authenticated' || !user) {
       setIsLoading(false);
       return;
@@ -86,104 +114,45 @@ export default function DashboardPage() {
     try {
       setIsLoading(true);
 
-      // Fetch all dashboard data in one optimized call
+      // Fetch all dashboard data via optimized server aggregation
       const result = await getDashboardStatsAction();
 
       if (result.success && result.data) {
-        const { 
-          totalStudents, 
-          totalGrades, 
-          averageGrade, 
-          upcomingEvents, 
-          totalRecordings, 
-          lessonsThisMonth, 
-          attendanceRate,
-          students,
-          grades,
-          events,
-          recordings
-        } = result.data;
+        const data = result.data as any;
 
-        // Generate recent activity
-        const recentActivity: Array<{
+        let recentActivity: Array<{
           id: string;
-          type: 'lesson' | 'grade' | 'event' | 'recording';
+          type: 'lesson' | 'grade' | 'event' | 'recording' | 'attendance';
           title: string;
           date: Date;
           icon: any;
           color: string;
         }> = [];
-        
-        // Add recent grades
-        const recentGrades = grades
-          .sort((a, b) => toValidDate(b.date).getTime() - toValidDate(a.date).getTime())
-          .slice(0, 3);
-        
-        recentGrades.forEach(grade => {
-          recentActivity.push({
-            id: grade.id,
-            type: 'grade' as const,
-            title: `Grade recorded for ${grade.studentName} - ${grade.subject}`,
-            date: toValidDate(grade.date),
-            icon: BarChart3,
-            color: 'text-green-600'
-          });
-        });
 
-        // Add recent events
-        const recentEvents = events
-          .sort((a, b) => {
-            const dateA = toValidDate(a.date);
-            const dateB = toValidDate(b.date);
-            return dateB.getTime() - dateA.getTime();
-          })
-          .slice(0, 2);
-        
-        recentEvents.forEach(event => {
-          const eventDate = toValidDate(event.date);
-          recentActivity.push({
-            id: event.id,
-            type: 'event' as const,
-            title: `${event.type}: ${event.title}`,
-            date: eventDate,
-            icon: Calendar,
-            color: 'text-blue-600'
-          });
-        });
-
-        // Add recent recordings
-        const recentRecordings = recordings
-          .sort((a, b) => {
-            const dateA = toValidDate(a.createdAt);
-            const dateB = toValidDate(b.createdAt);
-            return dateB.getTime() - dateA.getTime();
-          })
-          .slice(0, 2);
-        
-        recentRecordings.forEach(recording => {
-          const recordingDate = toValidDate(recording.createdAt);
-          recentActivity.push({
-            id: recording.id,
-            type: 'recording' as const,
-            title: `Recording: ${(recording as any).title || (recording as any).name || 'Class Session'}`,
-            date: recordingDate,
-            icon: Video,
-            color: 'text-purple-600'
-          });
-        });
-
-        // Sort all activities by date
-        recentActivity.sort((a, b) => b.date.getTime() - a.date.getTime());
+        // Check if server pre-collated recent activity exists
+        if (Array.isArray(data.recentActivity)) {
+          recentActivity = data.recentActivity.map((act: any) => ({
+            id: act.id,
+            type: act.type,
+            title: act.title,
+            date: toValidDate(act.date),
+            icon: getActivityIcon(act.type),
+            color: getActivityColor(act.type),
+          }));
+        }
 
         setStats({
-          totalStudents,
-          totalGrades,
-          averageGrade,
-          upcomingEvents,
-          totalRecordings,
-          lessonsThisMonth,
-          attendanceRate,
-          recentActivity: recentActivity.slice(0, 6)
+          totalStudents: data.totalStudents ?? 0,
+          totalGrades: data.totalGrades ?? 0,
+          averageGrade: data.averageGrade ?? null,
+          hasGrades: Boolean(data.hasGrades),
+          upcomingEvents: data.upcomingEvents ?? 0,
+          totalRecordings: data.totalRecordings ?? 0,
+          lessonsThisMonth: data.lessonsThisMonth ?? 0,
+          attendanceRate: data.attendanceRate ?? null,
+          totalAttendanceSessions: data.totalAttendanceSessions ?? 0,
+          hasAttendance: Boolean(data.hasAttendance),
+          recentActivity,
         });
       } else {
         toast({
@@ -203,11 +172,11 @@ export default function DashboardPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [authStatus, user, toast]);
 
   useEffect(() => {
     fetchDashboardData();
-  }, [authStatus, user]);
+  }, [fetchDashboardData]);
 
   const quickActions = [
     {
@@ -276,7 +245,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-3xl font-bold font-headline">Dashboard</h1>
           <p className="text-muted-foreground">
-            Welcome back! Here&apos;s an overview of your teaching activities.
+            Welcome back{user?.name ? `, ${user.name}` : ''}! Here&apos;s an overview of your teaching activities.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -316,9 +285,11 @@ export default function DashboardPage() {
             <BarChart3 className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.averageGrade}%</div>
+            <div className="text-2xl font-bold">
+              {stats.hasGrades && stats.averageGrade !== null ? `${stats.averageGrade}%` : '—'}
+            </div>
             <p className="text-xs text-muted-foreground">
-              {stats.totalGrades > 0 ? `${stats.totalGrades} grades recorded` : 'No grades yet'}
+              {stats.hasGrades ? `${stats.totalGrades} grades recorded` : 'No grades recorded yet'}
             </p>
           </CardContent>
         </Card>
@@ -329,9 +300,13 @@ export default function DashboardPage() {
             <CheckCircle className="h-4 w-4 text-purple-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.attendanceRate}%</div>
+            <div className="text-2xl font-bold">
+              {stats.hasAttendance && stats.attendanceRate !== null ? `${stats.attendanceRate}%` : '—'}
+            </div>
             <p className="text-xs text-muted-foreground">
-              {getStatusColor(stats.attendanceRate, 80) === "text-green-600" ? 'Excellent' : 'Needs improvement'}
+              {stats.hasAttendance
+                ? (stats.attendanceRate !== null && stats.attendanceRate >= 80 ? 'Excellent' : 'Needs improvement')
+                : 'No attendance recorded yet'}
             </p>
           </CardContent>
         </Card>
@@ -381,9 +356,13 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {stats.averageGrade >= 80 ? 'Excellent' : stats.averageGrade >= 70 ? 'Good' : 'Needs Work'}
+              {stats.hasGrades && stats.averageGrade !== null
+                ? (stats.averageGrade >= 80 ? 'Excellent' : stats.averageGrade >= 70 ? 'Good' : 'Needs Work')
+                : 'Not Evaluated'}
             </div>
-            <p className="text-xs text-muted-foreground">Class performance</p>
+            <p className="text-xs text-muted-foreground">
+              {stats.hasGrades ? 'Class performance' : 'Record grades to evaluate'}
+            </p>
           </CardContent>
         </Card>
       </div>
