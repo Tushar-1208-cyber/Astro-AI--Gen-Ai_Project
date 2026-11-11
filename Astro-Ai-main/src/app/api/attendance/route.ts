@@ -6,15 +6,39 @@ import { studentRepo, attendanceRepo } from "@/lib/db-repo";
 import { validateSameOrigin } from "@/lib/security";
 
 const AttendanceScanSchema = z.object({
+  action: z.literal("scan").optional(),
   photoDataUri: z.string().min(10, "Photo data is required"),
+  presentStudents: z.undefined({
+    invalid_type_error: "Scan requests must not include presentStudents",
+  }),
+  presentStudentIds: z.undefined({
+    invalid_type_error: "Scan requests must not include presentStudentIds",
+  }),
 });
 
-const AttendanceSubmitSchema = z.object({
-  date: z.string().or(z.date()).optional().default(() => new Date()),
-  presentStudents: z.array(z.string()).default([]),
-  presentStudentIds: z.array(z.string()).optional(),
-  photoDataUri: z.string().optional(),
-});
+const AttendanceSubmitSchema = z
+  .object({
+    action: z.literal("submit").optional(),
+    date: z.string().or(z.date()).optional().default(() => new Date()),
+    presentStudents: z.array(z.string()).optional(),
+    presentStudentIds: z.array(z.string()).optional(),
+    photoDataUri: z.string().optional(),
+  })
+  .refine(
+    (data) => {
+      const hasNames =
+        Array.isArray(data.presentStudents) &&
+        data.presentStudents.some((s) => typeof s === "string" && s.trim().length > 0);
+      const hasIds =
+        Array.isArray(data.presentStudentIds) &&
+        data.presentStudentIds.some((id) => typeof id === "string" && id.trim().length > 0);
+      return hasNames || hasIds;
+    },
+    {
+      message: "At least one valid student ID or name must be marked present",
+      path: ["presentStudentIds"],
+    }
+  );
 
 export async function GET(req: NextRequest) {
   const user = await getAuthenticatedUser();
@@ -43,11 +67,73 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    // Check if this is an AI face recognition request or an attendance submission
-    if (body.photoDataUri && !body.presentStudents) {
+    const hasPhoto = typeof body?.photoDataUri === "string" && body.photoDataUri.trim().length > 0;
+    const hasPresentStudents = Array.isArray(body?.presentStudents);
+    const hasPresentStudentIds = Array.isArray(body?.presentStudentIds);
+    const isScanAction = body?.action === "scan";
+    const isSubmitAction = body?.action === "submit";
+
+    // 1. Explicitly detect malformed mixed scan and direct submission payloads
+    if (isScanAction && (hasPresentStudents || hasPresentStudentIds)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Malformed mixed scan and direct submission payload: Scan requests cannot include attendance identity lists.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (isSubmitAction && !hasPresentStudents && !hasPresentStudentIds) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Malformed attendance submission: At least one student identity must be provided.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // 2. Classify: Direct attendance submission takes priority when student identities or submit action are present
+    const isDirectSubmission =
+      hasPresentStudentIds ||
+      hasPresentStudents ||
+      isSubmitAction;
+
+    if (isDirectSubmission) {
+      const validation = AttendanceSubmitSchema.safeParse(body);
+      if (!validation.success) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: validation.error.errors[0]?.message || "Invalid attendance data",
+          },
+          { status: 400 }
+        );
+      }
+
+      const created = await attendanceRepo.addAttendance(user.userId, {
+        date: new Date(validation.data.date),
+        presentStudentIds: validation.data.presentStudentIds,
+        presentStudents: validation.data.presentStudents,
+        photoDataUri: validation.data.photoDataUri,
+      });
+
+      const history = await attendanceRepo.getAttendance(user.userId);
+      return NextResponse.json({ success: true, created, history }, { status: 201 });
+    }
+
+    // 3. Classify: AI Face Recognition Scan (must have photo and no identity lists)
+    if (hasPhoto && !hasPresentStudents && !hasPresentStudentIds) {
       const validation = AttendanceScanSchema.safeParse(body);
       if (!validation.success) {
-        return NextResponse.json({ success: false, error: "Invalid photo payload" }, { status: 400 });
+        return NextResponse.json(
+          {
+            success: false,
+            error: validation.error.errors[0]?.message || "Invalid photo payload",
+          },
+          { status: 400 }
+        );
       }
 
       const students = await studentRepo.getStudents(user.userId);
@@ -76,28 +162,24 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Direct attendance submission
-    const validation = AttendanceSubmitSchema.safeParse(body);
-    if (!validation.success) {
-      return NextResponse.json({ success: false, error: "Invalid attendance data" }, { status: 400 });
-    }
-
-    const created = await attendanceRepo.addAttendance(user.userId, {
-      date: new Date(validation.data.date),
-      presentStudentIds: validation.data.presentStudentIds,
-      presentStudents: validation.data.presentStudents,
-      photoDataUri: validation.data.photoDataUri,
-    });
-
-    const history = await attendanceRepo.getAttendance(user.userId);
-    return NextResponse.json({ success: true, created, history }, { status: 201 });
+    // 4. Neither valid direct submission nor valid scan request
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Invalid request payload: must provide attendance identities for submission or photo data for scan.",
+      },
+      { status: 400 }
+    );
   } catch (error: any) {
     const isClientError =
       error?.message?.includes('not enrolled in your roster') ||
+      error?.message?.includes('not in this teacher\'s active roster') ||
       error?.message?.includes('Ambiguous student name') ||
       error?.message?.includes('Ambiguous student identity') ||
       error?.message?.includes('Conflicting student identity') ||
-      error?.message?.includes('Invalid attendance submission');
+      error?.message?.includes('Duplicate student name') ||
+      error?.message?.includes('Invalid attendance submission') ||
+      error?.message?.includes('At least one');
     return NextResponse.json(
       { success: false, error: error?.message || "Recognition / Attendance failed." },
       { status: isClientError ? 400 : 500 }
