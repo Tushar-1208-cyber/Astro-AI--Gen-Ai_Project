@@ -145,7 +145,23 @@ export async function enhanceWritingAction(input: EnhanceWritingInput) {
   return runAction(enhanceWriting, input);
 }
 
-export async function recognizeStudentsAction(input: {photoDataUri: string}) {  
+export async function recognizeStudentsAction(input: {photoDataUri: string}): Promise<{
+  success: true;
+  data: {
+    presentStudents: string[];
+    presentStudentIds: string[];
+    unresolvedNames: string[];
+    attendanceId?: string;
+  };
+} | {
+  success: false;
+  error: string;
+  data?: {
+    presentStudents: string[];
+    presentStudentIds: string[];
+    unresolvedNames: string[];
+  };
+}> {  
   const user = await getAuthenticatedUser();
   if (!user) {
     return { success: false, error: "Authentication required. Please log in." };
@@ -156,38 +172,42 @@ export async function recognizeStudentsAction(input: {photoDataUri: string}) {
 
   const result = await runAction(recognizeStudents, flowInput);
   
-  if (result.success && result.data && Array.isArray(result.data.presentStudents)) {
-    try {
-      // Validate AI recognition output against the teacher's authenticated roster
-      // Discard any hallucinated or unknown names not in the teacher's roster
-      const rosterNames = new Set(studentRoster.map(s => s.name.trim().toLowerCase()));
-      const validNamesMap = new Map<string, string>();
-      studentRoster.forEach(s => validNamesMap.set(s.name.trim().toLowerCase(), s.name.trim()));
-
-      const validatedPresentStudents = Array.from(
-        new Set(
-          result.data.presentStudents
-            .map(name => String(name || '').trim())
-            .filter(trimmed => trimmed.length > 0 && rosterNames.has(trimmed.toLowerCase()))
-            .map(trimmed => validNamesMap.get(trimmed.toLowerCase()) || trimmed)
-        )
-      );
-
-      // Mutate result data to only return validated students from authenticated roster
-      result.data.presentStudents = validatedPresentStudents;
-
-      await attendanceRepo.addAttendance(user.userId, {
-        date: new Date(),
-        presentStudents: validatedPresentStudents,
-        photoDataUri: input.photoDataUri,
-        totalStudents: studentRoster.length,
-      });
-      console.log("✅ Validated attendance & Photo stored in database.");
-    } catch (e) {
-      console.error("❌ Failed to store attendance:", e);
-    }
+  if (!result.success) {
+    return { success: false, error: result.error || "Failed to recognize students." };
   }
-  return result;
+
+  const rawRecognized = Array.isArray(result.data?.presentStudents) ? result.data.presentStudents : [];
+  const validated = await attendanceRepo.validateAndNormalizeAiRecognition(user.userId, rawRecognized);
+
+  try {
+    const attendanceRecord = await attendanceRepo.addAttendance(user.userId, {
+      date: new Date(),
+      presentStudentIds: validated.canonicalStudentIds,
+      presentStudents: validated.canonicalDisplayNames,
+      photoDataUri: input.photoDataUri,
+    });
+    console.log("✅ Validated attendance & Photo stored in database.");
+    return {
+      success: true,
+      data: {
+        presentStudents: validated.canonicalDisplayNames,
+        presentStudentIds: validated.canonicalStudentIds,
+        unresolvedNames: validated.unresolvedNames,
+        attendanceId: (attendanceRecord as any)?.id || (attendanceRecord as any)?._id?.toString(),
+      },
+    };
+  } catch (e: any) {
+    console.error("❌ Failed to store attendance:", e);
+    return {
+      success: false,
+      error: e?.message || "Failed to persist attendance record.",
+      data: {
+        presentStudents: validated.canonicalDisplayNames,
+        presentStudentIds: validated.canonicalStudentIds,
+        unresolvedNames: validated.unresolvedNames,
+      },
+    };
+  }
 }
 
 export async function submitAttendanceAction(presentStudents: string[], photoDataUri?: string) {
@@ -201,12 +221,10 @@ export async function submitAttendanceAction(presentStudents: string[], photoDat
   }
 
   try {
-    const validated = await attendanceRepo.validateAndNormalizeRoster(user.userId, presentStudents);
     await attendanceRepo.addAttendance(user.userId, {
       date: new Date(),
-      presentStudents: validated.canonicalPresentStudents,
+      presentStudents,
       photoDataUri: photoDataUri || "",
-      totalStudents: validated.totalStudents,
     });
     return { success: true };
   } catch (e: any) {
