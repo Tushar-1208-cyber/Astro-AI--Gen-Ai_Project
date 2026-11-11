@@ -210,19 +210,24 @@ export async function recognizeStudentsAction(input: {photoDataUri: string}): Pr
   }
 }
 
-export async function submitAttendanceAction(presentStudents: string[], photoDataUri?: string) {
+export async function submitAttendanceAction(
+  presentStudents: string[],
+  photoDataUri?: string,
+  presentStudentIds?: string[]
+) {
   const user = await getAuthenticatedUser();
   if (!user) {
     return { success: false, error: "Authentication required. Please log in." };
   }
 
-  if (!Array.isArray(presentStudents)) {
+  if (!Array.isArray(presentStudents) && !Array.isArray(presentStudentIds)) {
     return { success: false, error: "Invalid attendance data: Expected an array of student identifiers." };
   }
 
   try {
     await attendanceRepo.addAttendance(user.userId, {
       date: new Date(),
+      presentStudentIds,
       presentStudents,
       photoDataUri: photoDataUri || "",
     });
