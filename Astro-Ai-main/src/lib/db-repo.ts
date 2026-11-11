@@ -922,7 +922,7 @@ export const dashboardRepo = {
       Attendance.find({ userId })
         .sort({ date: -1, _id: -1 })
         .limit(6)
-        .select('_id date presentStudents')
+        .select('_id date presentStudents presentStudentIds')
         .lean()
         .exec(),
     ]);
@@ -993,12 +993,23 @@ export const dashboardRepo = {
     }
 
     for (const a of recentAttendance) {
-      const rawPresent = Array.isArray(a.presentStudents) ? a.presentStudents : [];
-      const presentCount = new Set(
-        rawPresent
-          .map((s: any) => (typeof s === 'string' ? s.trim() : ''))
-          .filter((s: string) => s.length > 0)
-      ).size;
+      let presentCount = 0;
+      if (Array.isArray(a.presentStudentIds) && a.presentStudentIds.length > 0) {
+        // Modern records with canonical IDs: count distinct valid IDs
+        const cleanIds = a.presentStudentIds
+          .map((id: any) => (typeof id === 'string' ? id.trim() : id ? String(id).trim() : ''))
+          .filter((id: string) => id.length > 0);
+        presentCount = new Set(cleanIds).size;
+      } else {
+        // Legacy records without canonical IDs: count normalized, deduplicated display names
+        const rawPresent = Array.isArray(a.presentStudents) ? a.presentStudents : [];
+        presentCount = new Set(
+          rawPresent
+            .map((s: any) => (typeof s === 'string' ? s.trim() : ''))
+            .filter((s: string) => s.length > 0)
+        ).size;
+      }
+
       recentActivity.push({
         id: (a._id || (a as any).id).toString(),
         type: 'attendance',
