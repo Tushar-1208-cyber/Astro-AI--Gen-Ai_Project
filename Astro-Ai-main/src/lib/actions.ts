@@ -81,7 +81,7 @@ import { studentRosterDb, type Student, gradesDb, type GradeEntry, calendarDb, t
 import { generateVideoFlowAction } from "@/ai/flows/generate-video";
 import { getAuthenticatedUser } from "./auth";
 import { sanitizeErrorMessage } from "./security";
-import { dashboardRepo } from "./db-repo";
+import { dashboardRepo, attendanceRepo } from "./db-repo";
 
 
 // Wrapper function to handle Genkit flow execution and error handling
@@ -156,14 +156,33 @@ export async function recognizeStudentsAction(input: {photoDataUri: string}) {
 
   const result = await runAction(recognizeStudents, flowInput);
   
-  if (result.success) {
+  if (result.success && result.data && Array.isArray(result.data.presentStudents)) {
     try {
-      await attendanceDb.addAttendance(user.userId, {
+      // Validate AI recognition output against the teacher's authenticated roster
+      // Discard any hallucinated or unknown names not in the teacher's roster
+      const rosterNames = new Set(studentRoster.map(s => s.name.trim().toLowerCase()));
+      const validNamesMap = new Map<string, string>();
+      studentRoster.forEach(s => validNamesMap.set(s.name.trim().toLowerCase(), s.name.trim()));
+
+      const validatedPresentStudents = Array.from(
+        new Set(
+          result.data.presentStudents
+            .map(name => String(name || '').trim())
+            .filter(trimmed => trimmed.length > 0 && rosterNames.has(trimmed.toLowerCase()))
+            .map(trimmed => validNamesMap.get(trimmed.toLowerCase()) || trimmed)
+        )
+      );
+
+      // Mutate result data to only return validated students from authenticated roster
+      result.data.presentStudents = validatedPresentStudents;
+
+      await attendanceRepo.addAttendance(user.userId, {
         date: new Date(),
-        presentStudents: result.data.presentStudents,
-        photoDataUri: input.photoDataUri
+        presentStudents: validatedPresentStudents,
+        photoDataUri: input.photoDataUri,
+        totalStudents: studentRoster.length,
       });
-      console.log("✅ Attendance & Photo stored in database.");
+      console.log("✅ Validated attendance & Photo stored in database.");
     } catch (e) {
       console.error("❌ Failed to store attendance:", e);
     }
@@ -172,21 +191,27 @@ export async function recognizeStudentsAction(input: {photoDataUri: string}) {
 }
 
 export async function submitAttendanceAction(presentStudents: string[], photoDataUri?: string) {
-    const user = await getAuthenticatedUser();
-    if (!user) {
-        return { success: false, error: "Authentication required. Please log in." };
-    }
-    
-    try {
-        await attendanceDb.addAttendance(user.userId, {
-            date: new Date(),
-            presentStudents,
-            photoDataUri: photoDataUri || ""
-        });
-        return { success: true };
-    } catch (e) {
-        return { success: false, error: "Failed to save attendance." };
-    }
+  const user = await getAuthenticatedUser();
+  if (!user) {
+    return { success: false, error: "Authentication required. Please log in." };
+  }
+
+  if (!Array.isArray(presentStudents)) {
+    return { success: false, error: "Invalid attendance data: Expected an array of student identifiers." };
+  }
+
+  try {
+    const validated = await attendanceRepo.validateAndNormalizeRoster(user.userId, presentStudents);
+    await attendanceRepo.addAttendance(user.userId, {
+      date: new Date(),
+      presentStudents: validated.canonicalPresentStudents,
+      photoDataUri: photoDataUri || "",
+      totalStudents: validated.totalStudents,
+    });
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e?.message || "Failed to save attendance." };
+  }
 }
 
 export async function createLessonPlanAction(input: CreateLessonPlanInput) {
