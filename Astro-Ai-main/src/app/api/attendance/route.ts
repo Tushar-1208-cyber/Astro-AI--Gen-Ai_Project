@@ -61,6 +61,23 @@ export async function POST(req: NextRequest) {
         photoDataUri: validation.data.photoDataUri,
         studentRoster,
       });
+
+      // Validate AI recognition output against the teacher's roster
+      const rosterNames = new Set(studentRoster.map((s) => s.name.trim().toLowerCase()));
+      const validNamesMap = new Map<string, string>();
+      studentRoster.forEach((s) => validNamesMap.set(s.name.trim().toLowerCase(), s.name.trim()));
+
+      if (result && Array.isArray(result.presentStudents)) {
+        result.presentStudents = Array.from(
+          new Set(
+            result.presentStudents
+              .map((name) => String(name || '').trim())
+              .filter((trimmed) => trimmed.length > 0 && rosterNames.has(trimmed.toLowerCase()))
+              .map((trimmed) => validNamesMap.get(trimmed.toLowerCase()) || trimmed)
+          )
+        );
+      }
+
       return NextResponse.json({ success: true, data: result });
     }
 
@@ -70,15 +87,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid attendance data" }, { status: 400 });
     }
 
+    // Validate present students against authenticated teacher's roster and derive totalStudents server-side
+    const validated = await attendanceRepo.validateAndNormalizeRoster(
+      user.userId,
+      validation.data.presentStudents
+    );
+
     const created = await attendanceRepo.addAttendance(user.userId, {
       date: new Date(validation.data.date),
-      presentStudents: validation.data.presentStudents,
+      presentStudents: validated.canonicalPresentStudents,
       photoDataUri: validation.data.photoDataUri,
+      totalStudents: validated.totalStudents,
     });
 
     const history = await attendanceRepo.getAttendance(user.userId);
     return NextResponse.json({ success: true, created, history }, { status: 201 });
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error?.message || "Recognition / Attendance failed." }, { status: 500 });
+    const isClientError =
+      error?.message?.includes('not enrolled in your roster') ||
+      error?.message?.includes('Ambiguous student name') ||
+      error?.message?.includes('Invalid attendance submission');
+    return NextResponse.json(
+      { success: false, error: error?.message || "Recognition / Attendance failed." },
+      { status: isClientError ? 400 : 500 }
+    );
   }
 }
