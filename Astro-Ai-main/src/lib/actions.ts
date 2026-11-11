@@ -81,6 +81,7 @@ import { studentRosterDb, type Student, gradesDb, type GradeEntry, calendarDb, t
 import { generateVideoFlowAction } from "@/ai/flows/generate-video";
 import { getAuthenticatedUser } from "./auth";
 import { sanitizeErrorMessage } from "./security";
+import { dashboardRepo } from "./db-repo";
 
 
 // Wrapper function to handle Genkit flow execution and error handling
@@ -451,64 +452,28 @@ export async function getDashboardStatsAction() {
     }
     
     try {
-        // Fetch all data in parallel
-        const [students, grades, events, recordings, attendance] = await Promise.all([
-            studentRosterDb.getStudents(user.userId),
-            gradesDb.getGrades(user.userId),
-            calendarDb.getEvents(user.userId),
-            recordingsDb.getRecordings(user.userId),
-            attendanceDb.getAttendance(user.userId)
-        ]);
-
-        // Calculate statistics
-        const totalStudents = students.length;
-        const totalGrades = grades.length;
-        const averageGrade = grades.length > 0 
-            ? Math.round(grades.reduce((sum, grade) => sum + (Number(grade.grade) || 0), 0) / grades.length)
-            : 0;
+        const stats = await dashboardRepo.getDashboardMetrics(user.userId);
         
-        const now = new Date();
-        const parseDate = (d: any): Date => {
-            if (d instanceof Date) return d;
-            if (d && typeof d.toDate === 'function') return d.toDate();
-            if (d && typeof d === 'object' && '_seconds' in d) return new Date(d._seconds * 1000);
-            return new Date(d);
-        };
-
-        const upcomingEvents = events.filter(event => {
-            const eventDate = parseDate(event.date);
-            return !isNaN(eventDate.getTime()) && eventDate >= now;
-        }).length;
-
-        const totalRecordings = recordings.length;
-        
-        const lessonsThisMonth = events.filter(event => {
-            const eventDate = parseDate(event.date);
-            return !isNaN(eventDate.getTime()) && event.type === 'Lesson' && eventDate.getMonth() === now.getMonth() && eventDate.getFullYear() === now.getFullYear();
-        }).length;
-
-        // Accurate attendance rate calculation from real records
-        let attendanceRate = 0;
-        if (totalStudents > 0 && attendance.length > 0) {
-            const totalPossible = attendance.length * totalStudents;
-            const totalPresent = attendance.reduce((sum, a) => sum + (Array.isArray(a.presentStudents) ? a.presentStudents.length : 0), 0);
-            attendanceRate = totalPossible > 0 ? Math.round((totalPresent / totalPossible) * 100) : 0;
-        }
-
         return {
             success: true,
             data: {
-                totalStudents,
-                totalGrades,
-                averageGrade,
-                upcomingEvents,
-                totalRecordings,
-                lessonsThisMonth,
-                attendanceRate,
-                students,
-                grades,
-                events,
-                recordings
+                totalStudents: stats.totalStudents,
+                totalGrades: stats.totalGrades,
+                averageGrade: stats.averageGrade,
+                hasGrades: stats.hasGrades,
+                upcomingEvents: stats.upcomingEvents,
+                totalRecordings: stats.totalRecordings,
+                lessonsThisMonth: stats.lessonsThisMonth,
+                attendanceRate: stats.attendanceRate,
+                totalAttendanceSessions: stats.totalAttendanceSessions,
+                hasAttendance: stats.hasAttendance,
+                recentActivity: stats.recentActivity.map(act => ({
+                    id: act.id,
+                    type: act.type,
+                    title: act.title,
+                    date: act.date.toISOString(),
+                    metadata: act.metadata,
+                })),
             }
         };
     } catch (error) {
