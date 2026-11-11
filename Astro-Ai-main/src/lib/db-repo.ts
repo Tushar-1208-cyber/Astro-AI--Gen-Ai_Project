@@ -548,7 +548,25 @@ export const dashboardRepo = {
                   },
                   {
                     $min: [
-                      { $size: { $setUnion: [{ $ifNull: ['$presentStudents', []] }, []] } },
+                      {
+                        $size: {
+                          $setUnion: [
+                            {
+                              $filter: {
+                                input: { $ifNull: ['$presentStudents', []] },
+                                as: 'item',
+                                cond: {
+                                  $and: [
+                                    { $ne: ['$$item', null] },
+                                    { $ne: [{ $trim: { input: { $toString: '$$item' } } }, ''] },
+                                  ],
+                                },
+                              },
+                            },
+                            [],
+                          ],
+                        },
+                      },
                       '$totalStudents',
                     ],
                   },
