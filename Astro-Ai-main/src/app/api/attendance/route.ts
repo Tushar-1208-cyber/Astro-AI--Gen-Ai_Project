@@ -12,6 +12,7 @@ const AttendanceScanSchema = z.object({
 const AttendanceSubmitSchema = z.object({
   date: z.string().or(z.date()).optional().default(() => new Date()),
   presentStudents: z.array(z.string()).default([]),
+  presentStudentIds: z.array(z.string()).optional(),
   photoDataUri: z.string().optional(),
 });
 
@@ -83,6 +84,7 @@ export async function POST(req: NextRequest) {
 
     const created = await attendanceRepo.addAttendance(user.userId, {
       date: new Date(validation.data.date),
+      presentStudentIds: validation.data.presentStudentIds,
       presentStudents: validation.data.presentStudents,
       photoDataUri: validation.data.photoDataUri,
     });
@@ -94,6 +96,7 @@ export async function POST(req: NextRequest) {
       error?.message?.includes('not enrolled in your roster') ||
       error?.message?.includes('Ambiguous student name') ||
       error?.message?.includes('Ambiguous student identity') ||
+      error?.message?.includes('Conflicting student identity') ||
       error?.message?.includes('Invalid attendance submission');
     return NextResponse.json(
       { success: false, error: error?.message || "Recognition / Attendance failed." },
