@@ -76,6 +76,7 @@ const CalendarEventSchema = new Schema<ICalendarEvent>(
 
 CalendarEventSchema.index({ userId: 1, date: 1 });
 CalendarEventSchema.index({ userId: 1, type: 1 });
+CalendarEventSchema.index({ userId: 1, type: 1, date: 1 });
 
 const CalendarEvent: Model<ICalendarEvent> =
   mongoose.models.CalendarEvent || mongoose.model<ICalendarEvent>('CalendarEvent', CalendarEventSchema);
