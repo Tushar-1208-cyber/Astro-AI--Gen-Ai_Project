@@ -345,7 +345,14 @@ export const attendanceRepo = {
 
   validateAndNormalizeRoster: async (
     userId: string,
-    submittedStudents: string[],
+    submittedInput:
+      | string[]
+      | {
+          studentIds?: string[];
+          studentNames?: string[];
+          presentStudentIds?: string[];
+          presentStudents?: string[];
+        },
     preFetchedRoster?: Array<any>
   ): Promise<{
     valid: boolean;
@@ -377,10 +384,121 @@ export const attendanceRepo = {
       nameToStudentMap.set(normName, { id: canonicalId, name: canonicalName });
     }
 
+    let rawIds: string[] | undefined;
+    let rawNames: string[] | undefined;
+
+    if (Array.isArray(submittedInput)) {
+      rawNames = submittedInput;
+    } else if (submittedInput && typeof submittedInput === 'object') {
+      rawIds = submittedInput.studentIds || submittedInput.presentStudentIds;
+      rawNames = submittedInput.studentNames || submittedInput.presentStudents;
+    }
+
+    const hasSuppliedIds = Array.isArray(rawIds) && rawIds.length > 0;
+    const hasSuppliedNames = Array.isArray(rawNames) && rawNames.length > 0;
+
+    // Empty attendance session (rate: 0% or empty)
+    if (!hasSuppliedIds && !hasSuppliedNames) {
+      return {
+        valid: true,
+        canonicalStudentIds: [],
+        canonicalDisplayNames: [],
+        canonicalPresentStudents: [],
+        totalStudents,
+      };
+    }
+
+    // CASE 1: Stable IDs are supplied
+    if (hasSuppliedIds) {
+      const canonicalIdSet = new Set<string>();
+      const canonicalDisplayNames: string[] = [];
+      const resolvedStudentsByCanonicalId = new Map<string, { id: string; name: string }>();
+
+      // Validate each ID against authenticated teacher's active roster
+      for (const rawId of rawIds!) {
+        if (rawId === null || rawId === undefined) {
+          throw new Error('Invalid attendance submission: Student identifier cannot be null or undefined.');
+        }
+        const trimmedId = String(rawId).trim();
+        if (trimmedId.length === 0) {
+          throw new Error('Invalid attendance submission: Student identifier cannot be empty or whitespace-only.');
+        }
+
+        if (!rosterIdMap.has(trimmedId)) {
+          throw new Error(`Student "${trimmedId}" is not enrolled in your roster.`);
+        }
+
+        const student = rosterIdMap.get(trimmedId)!;
+        if (!canonicalIdSet.has(student.id)) {
+          canonicalIdSet.add(student.id);
+          canonicalDisplayNames.push(student.name);
+          resolvedStudentsByCanonicalId.set(student.id, student);
+        }
+      }
+
+      // If display names are also supplied, verify that they correspond to the resolved IDs
+      // Never silently ignore a conflicting name/ID pairing
+      if (hasSuppliedNames) {
+        const sanitizedNames: string[] = [];
+        for (const rawName of rawNames!) {
+          if (rawName === null || rawName === undefined) {
+            throw new Error('Invalid attendance submission: Student identifier cannot be null or undefined.');
+          }
+          const trimmedName = String(rawName).trim();
+          if (trimmedName.length === 0) {
+            throw new Error('Invalid attendance submission: Student identifier cannot be empty or whitespace-only.');
+          }
+          sanitizedNames.push(trimmedName);
+        }
+
+        if (rawIds!.length === sanitizedNames.length) {
+          // Pairwise verification: ID at index i must match name at index i
+          for (let i = 0; i < rawIds!.length; i++) {
+            const idEntry = String(rawIds![i]).trim();
+            const nameEntry = sanitizedNames[i];
+            const student = rosterIdMap.get(idEntry)!;
+
+            const nameMatchesDirect = nameEntry.toLowerCase() === student.name.toLowerCase();
+            const nameMatchesId = rosterIdMap.has(nameEntry) && rosterIdMap.get(nameEntry)!.id === student.id;
+
+            if (!nameMatchesDirect && !nameMatchesId) {
+              throw new Error(
+                `Conflicting student identity: Student ID "${idEntry}" corresponds to "${student.name}", but conflicting name "${nameEntry}" was supplied.`
+              );
+            }
+          }
+        } else {
+          // Count mismatch between IDs and names:
+          // Check if every name corresponds to one of the resolved students
+          for (const nameEntry of sanitizedNames) {
+            const isResolvedId = rosterIdMap.has(nameEntry) && canonicalIdSet.has(rosterIdMap.get(nameEntry)!.id);
+            const isResolvedName = Array.from(resolvedStudentsByCanonicalId.values()).some(
+              (s) => s.name.toLowerCase() === nameEntry.toLowerCase()
+            );
+
+            if (!isResolvedId && !isResolvedName) {
+              throw new Error(
+                `Conflicting student identity: Supplied name "${nameEntry}" does not match any supplied student ID.`
+              );
+            }
+          }
+        }
+      }
+
+      return {
+        valid: true,
+        canonicalStudentIds: Array.from(canonicalIdSet),
+        canonicalDisplayNames,
+        canonicalPresentStudents: canonicalDisplayNames,
+        totalStudents,
+      };
+    }
+
+    // CASE 2: Only names (or raw strings) are supplied (no studentIds array)
     const canonicalIdSet = new Set<string>();
     const canonicalDisplayNames: string[] = [];
 
-    for (const rawEntry of submittedStudents) {
+    for (const rawEntry of rawNames!) {
       if (rawEntry === null || rawEntry === undefined) {
         throw new Error('Invalid attendance submission: Student identifier cannot be null or undefined.');
       }
@@ -473,10 +591,11 @@ export const attendanceRepo = {
           canonicalIdSet.add(student.id);
           canonicalDisplayNames.push(student.name);
         }
-      } else {
-        // Either ambiguous duplicate name (freq > 1) or unknown/hallucinated name (freq === 0)
+      } else if (freq > 1) {
+        // Ambiguous duplicate name: quarantine to unresolvedNames
         unresolvedNames.push(trimmed);
       }
+      // If freq === 0: unknown/hallucinated name, silently discard
     }
 
     return {
@@ -505,14 +624,12 @@ export const attendanceRepo = {
     await dbConnect();
 
     // Enforce non-bypassable roster validation against authenticated teacher's active roster
-    const rawInputs = [
-      ...(data.presentStudentIds || []),
-      ...(data.presentStudents || []),
-    ];
-
     const validated = await attendanceRepo.validateAndNormalizeRoster(
       userId,
-      rawInputs,
+      {
+        presentStudentIds: data.presentStudentIds,
+        presentStudents: data.presentStudents,
+      },
       internalContext?.preValidatedRoster
     );
 
