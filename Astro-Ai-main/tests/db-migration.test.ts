@@ -132,8 +132,8 @@ async function runTestSuite() {
     // TEST 3: Attendance CRUD
     // -------------------------------------------------------------
     try {
-      const s1 = await studentRepo.addStudent(userAId, { name: 'Student 1', class: '10' });
-      const s2 = await studentRepo.addStudent(userAId, { name: 'Student 2', class: '10' });
+      const s1 = await studentRepo.addStudent(userAId, { name: 'Student 1' });
+      const s2 = await studentRepo.addStudent(userAId, { name: 'Student 2' });
 
       const created = await attendanceRepo.addAttendance(userAId, {
         date: new Date(),
