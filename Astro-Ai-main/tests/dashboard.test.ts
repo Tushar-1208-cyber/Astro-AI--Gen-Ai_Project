@@ -36,7 +36,7 @@ import Grade from '../src/models/Grade';
 import CalendarEvent from '../src/models/CalendarEvent';
 import ClassRecording from '../src/models/ClassRecording';
 import Attendance from '../src/models/Attendance';
-import { dashboardRepo } from '../src/lib/db-repo';
+import { dashboardRepo, attendanceRepo } from '../src/lib/db-repo';
 
 interface TestResult {
   id: number;
@@ -591,6 +591,261 @@ async function runDashboardTests() {
         `sessions: ${stats.totalAttendanceSessions}, rate: ${stats.attendanceRate}% (Expected 38%)`);
     } catch (e: any) {
       record(25, 'DASH-25', 'Scalable MongoDB aggregation computes multi-session rate with exact rounding', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 26: Whitespace variants of the same student normalized and deduplicated in aggregation
+    // -------------------------------------------------------------
+    const normAggUserId = `norm_agg_user_${timestamp}`;
+    try {
+      await Student.create([
+        { userId: normAggUserId, name: 'Alice' },
+        { userId: normAggUserId, name: 'Bob' },
+      ]);
+      await Attendance.create([
+        {
+          userId: normAggUserId,
+          date: new Date(),
+          totalStudents: 2,
+          presentStudents: ['Alice', ' Alice ', 'Alice  ', '   ', '', 'Bob', 'Bob '],
+        },
+      ]);
+      const stats = await dashboardRepo.getDashboardMetrics(normAggUserId);
+      // Normalized unique students: Alice, Bob (2 students out of 2 = 100%)
+      const passed = stats.totalStudents === 2 && stats.attendanceRate === 100 && stats.totalAttendanceSessions === 1;
+      record(26, 'DASH-26', 'Whitespace variants of the same student normalized and deduplicated in aggregation', passed,
+        `sessions: ${stats.totalAttendanceSessions}, rate: ${stats.attendanceRate}% (Expected 100%)`);
+    } catch (e: any) {
+      record(26, 'DASH-26', 'Whitespace variants of the same student normalized and deduplicated in aggregation', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 27: Server boundary roster validation: Whitespace-only or empty student rejected
+    // -------------------------------------------------------------
+    const emptyStudentUserId = `empty_student_user_${timestamp}`;
+    try {
+      await Student.create([{ userId: emptyStudentUserId, name: 'Student 1' }]);
+      let errorCaught = false;
+      let errorMsg = '';
+      try {
+        await attendanceRepo.validateAndNormalizeRoster(emptyStudentUserId, ['   ', '']);
+      } catch (err: any) {
+        errorCaught = true;
+        errorMsg = err.message;
+      }
+      const passed = errorCaught && errorMsg.includes('empty or whitespace-only');
+      record(27, 'DASH-27', 'Server boundary roster validation: Whitespace-only or empty student rejected', passed,
+        `Error caught: ${errorCaught}, Message: "${errorMsg}"`);
+    } catch (e: any) {
+      record(27, 'DASH-27', 'Server boundary roster validation: Whitespace-only or empty student rejected', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 28: Server boundary roster validation: Duplicate student names in single roster rejected as ambiguous
+    // -------------------------------------------------------------
+    const dupRosterUserId = `dup_roster_user_${timestamp}`;
+    try {
+      await Student.create([
+        { userId: dupRosterUserId, name: 'Alex Taylor' },
+        { userId: dupRosterUserId, name: 'Alex Taylor' },
+      ]);
+      let errorCaught = false;
+      let errorMsg = '';
+      try {
+        await attendanceRepo.validateAndNormalizeRoster(dupRosterUserId, ['Alex Taylor']);
+      } catch (err: any) {
+        errorCaught = true;
+        errorMsg = err.message;
+      }
+      const passed = errorCaught && errorMsg.includes('Ambiguous student name') && errorMsg.includes('Alex Taylor');
+      record(28, 'DASH-28', 'Server boundary roster validation: Duplicate names in single roster rejected as ambiguous', passed,
+        `Error caught: ${errorCaught}, Message: "${errorMsg}"`);
+    } catch (e: any) {
+      record(28, 'DASH-28', 'Server boundary roster validation: Duplicate names in single roster rejected as ambiguous', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 29: Server boundary roster validation: Unknown or fabricated student strictly rejected
+    // -------------------------------------------------------------
+    const unkStudentUserId = `unk_student_user_${timestamp}`;
+    try {
+      await Student.create([{ userId: unkStudentUserId, name: 'Valid Student' }]);
+      let errorCaught = false;
+      let errorMsg = '';
+      try {
+        await attendanceRepo.validateAndNormalizeRoster(unkStudentUserId, ['Valid Student', 'Fabricated Intruder']);
+      } catch (err: any) {
+        errorCaught = true;
+        errorMsg = err.message;
+      }
+      const passed = errorCaught && errorMsg.includes('not enrolled in your roster') && errorMsg.includes('Fabricated Intruder');
+      record(29, 'DASH-29', 'Server boundary roster validation: Unknown/fabricated student strictly rejected', passed,
+        `Error caught: ${errorCaught}, Message: "${errorMsg}"`);
+    } catch (e: any) {
+      record(29, 'DASH-29', 'Server boundary roster validation: Unknown/fabricated student strictly rejected', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 30: Server boundary roster validation: Cross-tenant student submission strictly rejected
+    // -------------------------------------------------------------
+    const crossTeacherAId = `cross_teacher_a_${timestamp}`;
+    const crossTeacherBId = `cross_teacher_b_${timestamp}`;
+    try {
+      await Student.create([{ userId: crossTeacherAId, name: 'Teacher A Student' }]);
+      const studentB = await Student.create({ userId: crossTeacherBId, name: 'Teacher B Student' });
+
+      let errorCaught = false;
+      let errorMsg = '';
+      try {
+        // Teacher A attempts to submit Teacher B's student by name
+        await attendanceRepo.validateAndNormalizeRoster(crossTeacherAId, ['Teacher B Student']);
+      } catch (err: any) {
+        errorCaught = true;
+        errorMsg = err.message;
+      }
+
+      let idErrorCaught = false;
+      let idErrorMsg = '';
+      try {
+        // Teacher A attempts to submit Teacher B's student by ID
+        await attendanceRepo.validateAndNormalizeRoster(crossTeacherAId, [studentB._id.toString()]);
+      } catch (err: any) {
+        idErrorCaught = true;
+        idErrorMsg = err.message;
+      }
+
+      const passed = errorCaught && idErrorCaught && errorMsg.includes('not enrolled in your roster');
+      record(30, 'DASH-30', 'Server boundary roster validation: Cross-tenant student submission strictly rejected', passed,
+        `Name check error: "${errorMsg}", ID check error: "${idErrorMsg}"`);
+    } catch (e: any) {
+      record(30, 'DASH-30', 'Server boundary roster validation: Cross-tenant student submission strictly rejected', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 31: Client attempted denominator manipulation overridden by server-side derivation
+    // -------------------------------------------------------------
+    const manipUserId = `manip_user_${timestamp}`;
+    try {
+      await Student.create([
+        { userId: manipUserId, name: 'Student One' },
+        { userId: manipUserId, name: 'Student Two' },
+        { userId: manipUserId, name: 'Student Three' },
+      ]);
+
+      // Client attempts to pass a fabricated totalStudents of 9999
+      const created = await attendanceRepo.addAttendance(
+        manipUserId,
+        {
+          date: new Date(),
+          presentStudents: ['Student One', 'Student Two'],
+          totalStudents: 9999, // Manipulated value
+        },
+        { validateRoster: true }
+      );
+
+      // Verify the persisted record in MongoDB has totalStudents = 3, not 9999
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(manipUserId);
+      const passed = persisted?.totalStudents === 3 && stats.attendanceRate === 67; // 2/3 = 66.67% -> 67%
+      record(31, 'DASH-31', 'Client attempted denominator manipulation overridden by server-side derivation', passed,
+        `Persisted totalStudents: ${persisted?.totalStudents} (Expected 3, not 9999), Dashboard rate: ${stats.attendanceRate}%`);
+    } catch (e: any) {
+      record(31, 'DASH-31', 'Client attempted denominator manipulation overridden by server-side derivation', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 32: AI recognition output containing hallucinated students sanitized before persistence
+    // -------------------------------------------------------------
+    const aiSanitizeUserId = `ai_sanitize_user_${timestamp}`;
+    try {
+      const s1 = await Student.create({ userId: aiSanitizeUserId, name: 'Daniel Park' });
+      const s2 = await Student.create({ userId: aiSanitizeUserId, name: 'Emma Watson' });
+
+      // Simulate raw AI output that hallucinated non-existent students
+      const rawAiPresent = ['Daniel Park', 'Hallucinated Intruder', 'Unknown Bot', '   emma watson   '];
+
+      // Run server-boundary validation logic
+      const validated = await attendanceRepo.validateAndNormalizeRoster(aiSanitizeUserId, [s1.name, s2.name]);
+      const created = await attendanceRepo.addAttendance(
+        aiSanitizeUserId,
+        {
+          date: new Date(),
+          presentStudents: validated.canonicalPresentStudents,
+          totalStudents: validated.totalStudents,
+        }
+      );
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const stats = await dashboardRepo.getDashboardMetrics(aiSanitizeUserId);
+      const passed =
+        persisted?.presentStudents.length === 2 &&
+        persisted?.presentStudents.includes('Daniel Park') &&
+        persisted?.presentStudents.includes('Emma Watson') &&
+        !persisted?.presentStudents.includes('Hallucinated Intruder') &&
+        stats.attendanceRate === 100;
+
+      record(32, 'DASH-32', 'AI recognition output containing hallucinated students sanitized before persistence', passed,
+        `Persisted students: [${persisted?.presentStudents.join(', ')}], Dashboard rate: ${stats.attendanceRate}%`);
+    } catch (e: any) {
+      record(32, 'DASH-32', 'AI recognition output containing hallucinated students sanitized before persistence', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 33: Valid attendance submission updates persisted records and dashboard metrics
+    // -------------------------------------------------------------
+    const validSubmitUserId = `valid_submit_user_${timestamp}`;
+    try {
+      await Student.create([
+        { userId: validSubmitUserId, name: 'Student Alpha' },
+        { userId: validSubmitUserId, name: 'Student Beta' },
+        { userId: validSubmitUserId, name: 'Student Gamma' },
+        { userId: validSubmitUserId, name: 'Student Delta' },
+      ]);
+
+      const created = await attendanceRepo.addAttendance(
+        validSubmitUserId,
+        {
+          date: new Date(),
+          presentStudents: ['Student Alpha', 'Student Beta'],
+        },
+        { validateRoster: true }
+      );
+
+      const stats = await dashboardRepo.getDashboardMetrics(validSubmitUserId);
+      const passed =
+        created.totalStudents === 4 &&
+        stats.totalAttendanceSessions === 1 &&
+        stats.hasAttendance === true &&
+        stats.attendanceRate === 50; // 2/4 = 50%
+      record(33, 'DASH-33', 'Valid attendance submission updates persisted records and dashboard metrics', passed,
+        `Sessions: ${stats.totalAttendanceSessions}, rate: ${stats.attendanceRate}% (Expected 50%)`);
+    } catch (e: any) {
+      record(33, 'DASH-33', 'Valid attendance submission updates persisted records and dashboard metrics', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 34: Legacy records without historical denominator return attendanceRate: null
+    // -------------------------------------------------------------
+    const legacyRecUserId = `legacy_rec_user_${timestamp}`;
+    try {
+      await Student.create([{ userId: legacyRecUserId, name: 'Legacy Student' }]);
+
+      // Direct MongoDB insert simulating legacy un-migrated record without totalStudents
+      await Attendance.collection.insertOne({
+        userId: legacyRecUserId,
+        date: new Date(),
+        presentStudents: ['Legacy Student'],
+      });
+
+      const stats = await dashboardRepo.getDashboardMetrics(legacyRecUserId);
+      const passed =
+        stats.hasAttendance === true &&
+        stats.totalAttendanceSessions === 1 &&
+        stats.attendanceRate === null;
+      record(34, 'DASH-34', 'Legacy records without historical denominator return attendanceRate: null', passed,
+        `hasAttendance: ${stats.hasAttendance}, sessions: ${stats.totalAttendanceSessions}, attendanceRate: ${stats.attendanceRate}`);
+    } catch (e: any) {
+      record(34, 'DASH-34', 'Legacy records without historical denominator return attendanceRate: null', false, e.message);
     }
 
   } finally {
