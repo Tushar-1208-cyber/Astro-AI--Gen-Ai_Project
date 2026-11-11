@@ -1041,7 +1041,7 @@ async function runDashboardTests() {
       const passed =
         failureResult.success === false &&
         failureResult.error.includes('Database connection lost') &&
-        Boolean(failureResult.data?.presentStudents.includes('Bruce Wayne'));
+        Boolean(failureResult.data?.presentStudents?.includes('Bruce Wayne'));
 
       record(40, 'DASH-40', 'AI attendance persistence failure returns structured failure and does not claim success', passed,
         `success: ${failureResult.success}, error: "${failureResult.error}"`);
