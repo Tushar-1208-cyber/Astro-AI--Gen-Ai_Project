@@ -418,12 +418,12 @@ export const dashboardRepo = {
     await dbConnect();
 
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
     // 1. Parallel collection queries with projections and aggregations
     const [
-      totalStudents,
+      activeStudents,
       gradeAggregation,
       recentGrades,
       upcomingEventsCount,
@@ -431,11 +431,15 @@ export const dashboardRepo = {
       recentEvents,
       recordingsCount,
       recentRecordings,
+      totalAttendanceSessionsCount,
       attendanceSessions,
       recentAttendance,
     ] = await Promise.all([
-      // Total students count (no photo or raw document serialization)
-      Student.countDocuments({ userId }).exec(),
+      // Active students projection (only name and createdAt for historical roster validation; no photos)
+      Student.find({ userId })
+        .select('_id name createdAt')
+        .lean()
+        .exec(),
 
       // Grade statistics aggregation
       Grade.aggregate([
@@ -457,13 +461,13 @@ export const dashboardRepo = {
         .lean()
         .exec(),
 
-      // Upcoming calendar events
+      // Upcoming calendar events (date >= now)
       CalendarEvent.countDocuments({ userId, date: { $gte: now } }).exec(),
 
-      // Lessons this month (calendar events of type 'Lesson')
+      // Lessons this month (strictly calendar events of canonical type 'Lesson')
       CalendarEvent.countDocuments({
         userId,
-        type: 'Lesson',
+        type: { $in: ['Lesson', 'lesson'] },
         date: { $gte: startOfMonth, $lte: endOfMonth },
       }).exec(),
 
@@ -486,9 +490,12 @@ export const dashboardRepo = {
         .lean()
         .exec(),
 
-      // Attendance sessions (projection: only presentStudents count)
+      // Total attendance sessions count via fast index scan
+      Attendance.countDocuments({ userId }).exec(),
+
+      // Attendance sessions projection: only date and presentStudents
       Attendance.find({ userId })
-        .select('presentStudents')
+        .select('date presentStudents')
         .lean()
         .exec(),
 
@@ -507,28 +514,85 @@ export const dashboardRepo = {
     const hasGrades = totalGrades > 0 && avgGradeRaw !== null && !isNaN(avgGradeRaw);
     const averageGrade = hasGrades ? Math.min(100, Math.max(0, Math.round(avgGradeRaw))) : null;
 
-    // 3. Attendance rate calculation
-    const totalAttendanceSessions = attendanceSessions.length;
+    // 3. Attendance rate calculation with historical roster reconstruction
+    const totalStudents = activeStudents.length;
+    const totalAttendanceSessions = totalAttendanceSessionsCount;
     const hasAttendance = totalAttendanceSessions > 0;
     let attendanceRate: number | null = null;
 
     if (hasAttendance && totalStudents > 0) {
-      const totalPossible = totalAttendanceSessions * totalStudents;
-      let totalValidatedPresent = 0;
+      const validStudentNames = new Set(
+        activeStudents
+          .map((s) => (typeof s.name === 'string' ? s.name.trim() : ''))
+          .filter((n) => n.length > 0)
+      );
+
+      let denominatorUnavailable = false;
+      let totalPossibleAttendance = 0;
+      let totalActualPresent = 0;
 
       for (const session of attendanceSessions) {
+        const sessionDate = session.date instanceof Date ? session.date : new Date(session.date);
+        if (isNaN(sessionDate.getTime())) {
+          denominatorUnavailable = true;
+          break;
+        }
+
         const rawPresent = Array.isArray(session.presentStudents) ? session.presentStudents : [];
-        const uniquePresent = new Set(
-          rawPresent
-            .map((s: any) => (typeof s === 'string' ? s.trim() : ''))
-            .filter((s: string) => s.length > 0)
-        ).size;
-        // Cap present count at totalStudents to prevent overflow from historical roster churn
-        totalValidatedPresent += Math.min(uniquePresent, totalStudents);
+        const uniquePresent = Array.from(
+          new Set(
+            rawPresent
+              .map((s: any) => (typeof s === 'string' ? s.trim() : ''))
+              .filter((s: string) => s.length > 0)
+          )
+        );
+
+        // Strict rule: Never count unknown or unrelated student names without validation.
+        // If any present student is not in active roster (e.g. removed after session),
+        // historical roster size cannot be reconstructed -> explicit null state.
+        const hasUnknownPresentStudent = uniquePresent.some((name) => !validStudentNames.has(name));
+        if (hasUnknownPresentStudent) {
+          denominatorUnavailable = true;
+          break;
+        }
+
+        // Determine eligible students enrolled on or before session date (with 1000ms clock tolerance)
+        const sessionThreshold = sessionDate.getTime() + 1000;
+        const eligibleStudentsAtSession = activeStudents.filter((s) => {
+          const createdAt = s.createdAt instanceof Date ? s.createdAt : new Date(s.createdAt);
+          return !isNaN(createdAt.getTime()) && createdAt.getTime() <= sessionThreshold;
+        });
+
+        // If no active students existed at the time of the session, denominator is unavailable.
+        if (eligibleStudentsAtSession.length === 0) {
+          denominatorUnavailable = true;
+          break;
+        }
+
+        // Verify present students were actually enrolled at session time
+        const eligibleNames = new Set(
+          eligibleStudentsAtSession.map((s) => (typeof s.name === 'string' ? s.name.trim() : ''))
+        );
+        const hasUnenrolledPresentStudent = uniquePresent.some((name) => !eligibleNames.has(name));
+        if (hasUnenrolledPresentStudent) {
+          denominatorUnavailable = true;
+          break;
+        }
+
+        const sessionDenominator = eligibleStudentsAtSession.length;
+        const sessionPresent = Math.min(uniquePresent.length, sessionDenominator);
+
+        totalPossibleAttendance += sessionDenominator;
+        totalActualPresent += sessionPresent;
       }
 
-      if (totalPossible > 0) {
-        attendanceRate = Math.min(100, Math.max(0, Math.round((totalValidatedPresent / totalPossible) * 100)));
+      if (!denominatorUnavailable && totalPossibleAttendance > 0) {
+        attendanceRate = Math.min(
+          100,
+          Math.max(0, Math.round((totalActualPresent / totalPossibleAttendance) * 100))
+        );
+      } else {
+        attendanceRate = null;
       }
     }
 
