@@ -1513,6 +1513,237 @@ async function runDashboardTests() {
       record(54, 'DUP-08', 'AI recognition continues to quarantine ambiguous names in unresolvedNames without corrupting persistence', false, e.message);
     }
 
+    // -------------------------------------------------------------
+    // Scenario 55: (ACT-01) Two students with identical names but distinct IDs in Recent Activity
+    // -------------------------------------------------------------
+    const s55UserId = `s55_user_${timestamp}`;
+    try {
+      const [s1, s2] = await Student.create([
+        { userId: s55UserId, name: 'Alex Smith' },
+        { userId: s55UserId, name: 'Alex Smith' },
+      ]);
+
+      const created = await attendanceRepo.addAttendance(s55UserId, {
+        date: new Date(),
+        presentStudentIds: [s1._id.toString(), s2._id.toString()],
+        presentStudents: ['Alex Smith', 'Alex Smith'],
+      });
+
+      const metrics = await dashboardRepo.getDashboardMetrics(s55UserId);
+      const attActivity = metrics.recentActivity.find(
+        (a) => a.type === 'attendance' && a.id === created._id.toString()
+      );
+
+      const passed =
+        attActivity !== undefined &&
+        attActivity.metadata?.presentCount === 2 &&
+        attActivity.title.includes('2 student(s) marked present');
+
+      record(
+        55,
+        'ACT-01',
+        'Recent activity reflects count of 2 for distinct students with identical names',
+        passed,
+        `Count: ${attActivity?.metadata?.presentCount}, Title: "${attActivity?.title}"`
+      );
+    } catch (e: any) {
+      record(55, 'ACT-01', 'Recent activity reflects count of 2 for distinct students with identical names', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 56: (ACT-02) Same ID duplicated in modern record is deduplicated in Recent Activity
+    // -------------------------------------------------------------
+    const s56UserId = `s56_user_${timestamp}`;
+    try {
+      const [s1] = await Student.create([
+        { userId: s56UserId, name: 'Duplicate Bob' },
+      ]);
+
+      // Direct MongoDB insert simulating raw document with duplicated IDs
+      const insertRes = await Attendance.collection.insertOne({
+        userId: s56UserId,
+        date: new Date(),
+        presentStudentIds: [s1._id.toString(), s1._id.toString(), `  ${s1._id.toString()}  `],
+        presentStudents: ['Duplicate Bob', 'Duplicate Bob'],
+        totalStudents: 1,
+      });
+
+      const metrics = await dashboardRepo.getDashboardMetrics(s56UserId);
+      const attActivity = metrics.recentActivity.find(
+        (a) => a.type === 'attendance' && a.id === insertRes.insertedId.toString()
+      );
+
+      const passed =
+        attActivity !== undefined &&
+        attActivity.metadata?.presentCount === 1 &&
+        attActivity.title.includes('1 student(s) marked present');
+
+      record(
+        56,
+        'ACT-02',
+        'Recent activity deduplicates repeated canonical IDs to single student count',
+        passed,
+        `Count: ${attActivity?.metadata?.presentCount}, Title: "${attActivity?.title}"`
+      );
+    } catch (e: any) {
+      record(56, 'ACT-02', 'Recent activity deduplicates repeated canonical IDs to single student count', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 57: (ACT-03) Legacy records without IDs normalized and deduplicated in Recent Activity
+    // -------------------------------------------------------------
+    const s57UserId = `s57_user_${timestamp}`;
+    try {
+      // Legacy document without presentStudentIds
+      const insertRes = await Attendance.collection.insertOne({
+        userId: s57UserId,
+        date: new Date(),
+        presentStudents: ['Legacy Student A', 'Legacy Student B', ' Legacy Student B ', '   '],
+      });
+
+      const metrics = await dashboardRepo.getDashboardMetrics(s57UserId);
+      const attActivity = metrics.recentActivity.find(
+        (a) => a.type === 'attendance' && a.id === insertRes.insertedId.toString()
+      );
+
+      const persisted = await Attendance.collection.findOne({ _id: insertRes.insertedId });
+      const passed =
+        attActivity !== undefined &&
+        attActivity.metadata?.presentCount === 2 &&
+        attActivity.title.includes('2 student(s) marked present') &&
+        persisted?.presentStudentIds === undefined; // IDs are not fabricated
+
+      record(
+        57,
+        'ACT-03',
+        'Recent activity counts normalized display names for legacy records without fabricating IDs',
+        passed,
+        `Count: ${attActivity?.metadata?.presentCount}, Has IDs: ${persisted?.presentStudentIds !== undefined}`
+      );
+    } catch (e: any) {
+      record(57, 'ACT-03', 'Recent activity counts normalized display names for legacy records without fabricating IDs', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 58: (ACT-04) Mixed modern and legacy records in Recent Activity
+    // -------------------------------------------------------------
+    const s58UserId = `s58_user_${timestamp}`;
+    try {
+      const [s1, s2] = await Student.create([
+        { userId: s58UserId, name: 'Taylor' },
+        { userId: s58UserId, name: 'Taylor' },
+      ]);
+
+      const now = new Date();
+      // Modern record (newer)
+      const modernInsert = await Attendance.collection.insertOne({
+        userId: s58UserId,
+        date: new Date(now.getTime() + 1000),
+        presentStudentIds: [s1._id.toString(), s2._id.toString()],
+        presentStudents: ['Taylor', 'Taylor'],
+        totalStudents: 2,
+      });
+
+      // Legacy record (older)
+      const legacyInsert = await Attendance.collection.insertOne({
+        userId: s58UserId,
+        date: now,
+        presentStudents: ['Legacy Jordan'],
+      });
+
+      const metrics = await dashboardRepo.getDashboardMetrics(s58UserId);
+      const modernAct = metrics.recentActivity.find((a) => a.id === modernInsert.insertedId.toString());
+      const legacyAct = metrics.recentActivity.find((a) => a.id === legacyInsert.insertedId.toString());
+
+      const passed =
+        modernAct !== undefined &&
+        modernAct.metadata?.presentCount === 2 &&
+        legacyAct !== undefined &&
+        legacyAct.metadata?.presentCount === 1;
+
+      record(
+        58,
+        'ACT-04',
+        'Mixed modern and legacy records each resolve correct counts in Recent Activity',
+        passed,
+        `Modern count: ${modernAct?.metadata?.presentCount} (Expected 2), Legacy count: ${legacyAct?.metadata?.presentCount} (Expected 1)`
+      );
+    } catch (e: any) {
+      record(58, 'ACT-04', 'Mixed modern and legacy records each resolve correct counts in Recent Activity', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 59: (ACT-05) Empty attendance session in Recent Activity
+    // -------------------------------------------------------------
+    const s59UserId = `s59_user_${timestamp}`;
+    try {
+      const insertRes = await Attendance.collection.insertOne({
+        userId: s59UserId,
+        date: new Date(),
+        presentStudentIds: [],
+        presentStudents: [],
+        totalStudents: 5,
+      });
+
+      const metrics = await dashboardRepo.getDashboardMetrics(s59UserId);
+      const attActivity = metrics.recentActivity.find(
+        (a) => a.type === 'attendance' && a.id === insertRes.insertedId.toString()
+      );
+
+      const passed =
+        attActivity !== undefined &&
+        attActivity.metadata?.presentCount === 0 &&
+        attActivity.title.includes('0 student(s) marked present');
+
+      record(
+        59,
+        'ACT-05',
+        'Empty attendance session correctly yields 0 count in Recent Activity',
+        passed,
+        `Count: ${attActivity?.metadata?.presentCount}, Title: "${attActivity?.title}"`
+      );
+    } catch (e: any) {
+      record(59, 'ACT-05', 'Empty attendance session correctly yields 0 count in Recent Activity', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 60: (ACT-06) Recent activity count exactly matches persisted attendance identities
+    // -------------------------------------------------------------
+    const s60UserId = `s60_user_${timestamp}`;
+    try {
+      const [s1, s2, s3] = await Student.create([
+        { userId: s60UserId, name: 'Student One' },
+        { userId: s60UserId, name: 'Student Two' },
+        { userId: s60UserId, name: 'Student Three' },
+      ]);
+
+      const created = await attendanceRepo.addAttendance(s60UserId, {
+        date: new Date(),
+        presentStudentIds: [s1._id.toString(), s2._id.toString(), s3._id.toString()],
+        presentStudents: ['Student One', 'Student Two', 'Student Three'],
+      });
+
+      const persisted = await Attendance.findById(created._id).lean();
+      const metrics = await dashboardRepo.getDashboardMetrics(s60UserId);
+      const attActivity = metrics.recentActivity.find((a) => a.id === created._id.toString());
+
+      const passed =
+        persisted !== null &&
+        attActivity !== undefined &&
+        attActivity.metadata?.presentCount === persisted.presentStudentIds?.length &&
+        attActivity.metadata?.presentCount === 3;
+
+      record(
+        60,
+        'ACT-06',
+        'Recent activity count strictly matches persisted attendance record identity count',
+        passed,
+        `Activity count: ${attActivity?.metadata?.presentCount}, Persisted IDs length: ${persisted?.presentStudentIds?.length}`
+      );
+    } catch (e: any) {
+      record(60, 'ACT-06', 'Recent activity count strictly matches persisted attendance record identity count', false, e.message);
+    }
+
   } finally {
     // Cleanup test data created during suite
     await Promise.all([
