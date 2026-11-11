@@ -335,6 +335,21 @@ export async function deleteStudentAction(id: string) {
     }
 }
 
+export async function updateStudentAction(id: string, student: Partial<Omit<Student, 'id' | 'uid'>>) {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+        return { success: false, error: "Authentication required. Please log in." };
+    }
+    try {
+        await studentRosterDb.updateStudent(user.userId, id, student);
+        const students = await studentRosterDb.getStudents(user.userId);
+        return { success: true, data: students };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to update student.";
+        return { success: false, error: message };
+    }
+}
+
 
 // Grade Tracking Actions
 export async function getGradesAction() {
