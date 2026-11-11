@@ -57,8 +57,12 @@ export default function CalendarPage() {
             setIsLoading(false);
         }
     }
-    fetchEvents();
-  }, [authStatus, user]);
+    if (authStatus === 'authenticated') {
+      fetchEvents();
+    } else if (authStatus !== 'loading') {
+      setIsLoading(false);
+    }
+  }, [authStatus, user, toast]);
 
   const addEvent = async (event: Omit<CalendarEvent, 'id' | 'uid'>) => {
     try {
