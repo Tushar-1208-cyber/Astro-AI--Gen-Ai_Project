@@ -79,8 +79,8 @@ async function runDashboardTests() {
         return { success: true, data: {} };
       };
       const res = await mockUnauthAction(null);
-      const passed = res.success === false && res.error.includes('Authentication required');
-      record(1, 'DASH-01', 'Unauthenticated request rejection contract', passed, res.error);
+      const passed = res.success === false && Boolean(res.error?.includes('Authentication required'));
+      record(1, 'DASH-01', 'Unauthenticated request rejection contract', passed, res.error || '');
     } catch (e: any) {
       record(1, 'DASH-01', 'Unauthenticated request rejection contract', false, e.message);
     }
@@ -294,7 +294,7 @@ async function runDashboardTests() {
       const stats = await dashboardRepo.getDashboardMetrics(activityUserId);
       const hasAttendanceActivity = stats.recentActivity.some(a => a.type === 'attendance');
       const attendanceItem = stats.recentActivity.find(a => a.type === 'attendance');
-      const passed = hasAttendanceActivity && attendanceItem?.title.includes('2 student(s)');
+      const passed = Boolean(hasAttendanceActivity && attendanceItem?.title.includes('2 student(s)'));
       record(12, 'DASH-12', 'Recent activity includes attendance sessions', passed,
         attendanceItem?.title || 'No attendance activity found');
     } catch (e: any) {
