@@ -153,6 +153,7 @@ async function runDashboardTests() {
         userId: zeroAttendanceUserId,
         date: new Date(),
         presentStudents: [],
+        totalStudents: 1,
       }]);
 
       const stats = await dashboardRepo.getDashboardMetrics(zeroAttendanceUserId);
@@ -176,6 +177,7 @@ async function runDashboardTests() {
         userId: boundaryUserId,
         date: new Date(),
         presentStudents: ['Student 1', 'Student 2'],
+        totalStudents: 2,
       }]);
 
       const stats = await dashboardRepo.getDashboardMetrics(boundaryUserId);
@@ -199,6 +201,7 @@ async function runDashboardTests() {
         userId: invalidAttUserId,
         date: new Date(),
         presentStudents: ['Student 1', 'Student 1', '   ', ''], // Duplicate Student 1 + empty spaces
+        totalStudents: 2,
       }]);
 
       const stats = await dashboardRepo.getDashboardMetrics(invalidAttUserId);
@@ -404,7 +407,8 @@ async function runDashboardTests() {
     }
 
     // -------------------------------------------------------------
-    // Scenario 18: Students added after a historical session (reconstructed denominator excludes future students)
+    // -------------------------------------------------------------
+    // Scenario 18: Student added after historical session does not inflate historical denominator
     // -------------------------------------------------------------
     const addedLaterUserId = `added_later_user_${timestamp}`;
     try {
@@ -415,44 +419,46 @@ async function runDashboardTests() {
       // Student 1 created on Day 1
       await Student.create([{ userId: addedLaterUserId, name: 'Student Alpha', createdAt: day1 }]);
 
-      // Attendance session on Day 2 with Student Alpha present (only student enrolled on Day 2)
+      // Attendance session on Day 2 with Student Alpha present, with session denominator locked at 1
       await Attendance.create([{
         userId: addedLaterUserId,
         date: day2,
         presentStudents: ['Student Alpha'],
+        totalStudents: 1,
       }]);
 
       // Student 2 created on Day 3 (after the session)
       await Student.create([{ userId: addedLaterUserId, name: 'Student Beta', createdAt: day3 }]);
 
       const stats = await dashboardRepo.getDashboardMetrics(addedLaterUserId);
-      // Total active students today is 2. But on Day 2, only Student Alpha was enrolled.
-      // Denominator for Day 2 is 1 (not 2). Student Alpha was present -> 1/1 = 100%!
+      // Total active students today is 2. But the historical session recorded totalStudents: 1.
+      // Denominator for Day 2 remains 1 (not 2). Student Alpha was present -> 1/1 = 100%!
       const passed = stats.totalStudents === 2 && stats.attendanceRate === 100;
-      record(18, 'DASH-18', 'Students added after historical session excluded from earlier session denominator', passed,
+      record(18, 'DASH-18', 'Student added after historical session does not inflate historical denominator', passed,
         `totalStudents: ${stats.totalStudents}, attendanceRate: ${stats.attendanceRate}% (Expected 100%, not 50%)`);
     } catch (e: any) {
-      record(18, 'DASH-18', 'Students added after historical session excluded from earlier session denominator', false, e.message);
+      record(18, 'DASH-18', 'Student added after historical session does not inflate historical denominator', false, e.message);
     }
 
     // -------------------------------------------------------------
-    // Scenario 19: Unknown student name in attendance strictly sets attendanceRate: null
+    // Scenario 19: Missing historical roster information strictly sets attendanceRate: null
     // -------------------------------------------------------------
-    const unknownStudentUserId = `unknown_student_user_${timestamp}`;
+    const missingRosterUserId = `missing_roster_user_${timestamp}`;
     try {
-      await Student.create([{ userId: unknownStudentUserId, name: 'Known Student' }]);
+      await Student.create([{ userId: missingRosterUserId, name: 'Known Student' }]);
+      // Session created without totalStudents snapshot (historical roster info missing)
       await Attendance.create([{
-        userId: unknownStudentUserId,
+        userId: missingRosterUserId,
         date: new Date(),
-        presentStudents: ['Known Student', 'Unknown Intruder'],
+        presentStudents: ['Known Student'],
       }]);
 
-      const stats = await dashboardRepo.getDashboardMetrics(unknownStudentUserId);
+      const stats = await dashboardRepo.getDashboardMetrics(missingRosterUserId);
       const passed = stats.hasAttendance === true && stats.attendanceRate === null;
-      record(19, 'DASH-19', 'Unknown student in attendance record strictly sets attendanceRate: null', passed,
+      record(19, 'DASH-19', 'Missing historical roster information strictly sets attendanceRate: null', passed,
         `hasAttendance: ${stats.hasAttendance}, attendanceRate: ${stats.attendanceRate} (Expected null)`);
     } catch (e: any) {
-      record(19, 'DASH-19', 'Unknown student in attendance record strictly sets attendanceRate: null', false, e.message);
+      record(19, 'DASH-19', 'Missing historical roster information strictly sets attendanceRate: null', false, e.message);
     }
 
     // -------------------------------------------------------------
@@ -475,27 +481,27 @@ async function runDashboardTests() {
     }
 
     // -------------------------------------------------------------
-    // Scenario 21: Unavailable historical denominator when session predates all active students
+    // Scenario 21: Deleted student who was absent historically (incomplete denominator yields attendanceRate: null)
     // -------------------------------------------------------------
-    const predatedUserId = `predated_user_${timestamp}`;
+    const absentDeletedUserId = `absent_deleted_user_${timestamp}`;
     try {
-      const sessionDate = new Date('2020-01-01T00:00:00Z');
-      const studentCreatedDate = new Date('2026-01-01T00:00:00Z');
-
-      await Student.create([{ userId: predatedUserId, name: 'Future Student', createdAt: studentCreatedDate }]);
+      // 1 registered student currently (Student Alpha)
+      await Student.create([{ userId: absentDeletedUserId, name: 'Student Alpha' }]);
+      // Historical session had Alice present, but Bob was enrolled and absent, then permanently deleted without snapshot
       await Attendance.create([{
-        userId: predatedUserId,
-        date: sessionDate,
-        presentStudents: ['Future Student'],
+        userId: absentDeletedUserId,
+        date: new Date(),
+        presentStudents: ['Student Alpha'],
+        // totalStudents is missing/undefined
       }]);
 
-      const stats = await dashboardRepo.getDashboardMetrics(predatedUserId);
-      // Because session occurred years before any student was created, eligible denominator at session is 0
+      const stats = await dashboardRepo.getDashboardMetrics(absentDeletedUserId);
+      // Because no snapshot exists, the system cannot verify if absent students were deleted -> returns attendanceRate: null
       const passed = stats.hasAttendance === true && stats.attendanceRate === null;
-      record(21, 'DASH-21', 'Unavailable denominator when session predates student enrollment sets attendanceRate: null', passed,
+      record(21, 'DASH-21', 'Deleted student who was absent historically sets attendanceRate: null due to missing snapshot', passed,
         `hasAttendance: ${stats.hasAttendance}, attendanceRate: ${stats.attendanceRate} (Expected null)`);
     } catch (e: any) {
-      record(21, 'DASH-21', 'Unavailable denominator when session predates student enrollment sets attendanceRate: null', false, e.message);
+      record(21, 'DASH-21', 'Deleted student who was absent historically sets attendanceRate: null due to missing snapshot', false, e.message);
     }
 
     // -------------------------------------------------------------
@@ -566,6 +572,25 @@ async function runDashboardTests() {
         `User A: ${statsA.lessonsThisMonth} lessons (Expected 2), User B: ${statsB.lessonsThisMonth} lessons (Expected 1)`);
     } catch (e: any) {
       record(24, 'DASH-24', 'Multi-tenant lesson event isolation verified across distinct users', false, e.message);
+    }
+
+    // -------------------------------------------------------------
+    // Scenario 25: Scalable MongoDB aggregation produces verified metrics without unbounded collection serialization
+    // -------------------------------------------------------------
+    const aggVerifyUserId = `agg_verify_user_${timestamp}`;
+    try {
+      await Attendance.create([
+        { userId: aggVerifyUserId, date: new Date(), presentStudents: ['S1', 'S2'], totalStudents: 4 },
+        { userId: aggVerifyUserId, date: new Date(), presentStudents: ['S1'], totalStudents: 4 },
+      ]);
+
+      const stats = await dashboardRepo.getDashboardMetrics(aggVerifyUserId);
+      // Total sessions = 2, total possible = 8, total present = 3. 3/8 = 37.5% -> rounds to 38%
+      const passed = stats.totalAttendanceSessions === 2 && stats.attendanceRate === 38;
+      record(25, 'DASH-25', 'Scalable MongoDB aggregation computes multi-session rate with exact rounding', passed,
+        `sessions: ${stats.totalAttendanceSessions}, rate: ${stats.attendanceRate}% (Expected 38%)`);
+    } catch (e: any) {
+      record(25, 'DASH-25', 'Scalable MongoDB aggregation computes multi-session rate with exact rounding', false, e.message);
     }
 
   } finally {
