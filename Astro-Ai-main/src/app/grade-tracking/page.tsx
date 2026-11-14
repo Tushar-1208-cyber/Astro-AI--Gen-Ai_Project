@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   Table,
   TableBody,
@@ -53,27 +53,32 @@ export default function GradeTrackingPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [selectedClass, setSelectedClass] = useState<string>("");
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { authStatus, user } = useAuth();
   const { language } = useLanguage();
 
-  useEffect(() => {
-    async function fetchGrades() {
-        setIsLoading(true);
-        try {
-            const result = await getGradesAction();
-            if(result.success && result.data) {
-                setGrades(result.data);
-            } else {
-                toast({ title: "Error", description: result.error || "Could not fetch grades.", variant: "destructive" });
-            }
-        } catch (error) {
-            toast({ title: "Error", description: error instanceof Error ? error.message : "Could not fetch grades.", variant: "destructive" });
-        } finally {
-            setIsLoading(false);
-        }
+  const fetchGrades = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const result = await getGradesAction();
+      if (result.success && result.data) {
+        setGrades(result.data);
+      } else {
+        toast({ title: "Error", description: result.error || "Could not fetch grades.", variant: "destructive" });
+      }
+    } catch (error) {
+      toast({ title: "Error", description: error instanceof Error ? error.message : "Could not fetch grades.", variant: "destructive" });
+    } finally {
+      setIsLoading(false);
     }
-    fetchGrades();
-  }, [user]);
+  }, [toast]);
+
+  useEffect(() => {
+    if (authStatus === 'authenticated') {
+      fetchGrades();
+    } else if (authStatus !== 'loading') {
+      setIsLoading(false);
+    }
+  }, [authStatus, fetchGrades]);
 
 
   const classes = useMemo(() => {
