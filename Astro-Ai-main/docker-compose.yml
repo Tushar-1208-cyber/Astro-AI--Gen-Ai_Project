@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # 1. Astro AI - Persistent MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: astro-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: astro
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Astro AI - Local Fine-Tuned AI Inference Engine (TinyLlama LoRA)
+  local-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai
+    container_name: astro-ai-engine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - ./my_finetuned_model:/app/my_finetuned_model:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # 3. Astro AI - Next.js Application Server
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: astro-app
+    restart: unless-stopped
+    ports:
+      - "9002:9002"
+    environment:
+      - NODE_ENV=production
+      - PORT=9002
+      - MONGODB_URI=mongodb://mongodb:27017/astro
+      - LOCAL_AI_URL=http://local-ai:8000/generate
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      local-ai:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+      - backups_data:/app/backups
+
+volumes:
+  mongo_data:
+    name: astro_mongo_data
+  uploads_data:
+    name: astro_uploads_data
+  backups_data:
+    name: astro_backups_data
