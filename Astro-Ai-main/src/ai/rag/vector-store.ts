@@ -20,7 +20,18 @@ export interface ChunkRecord {
   content: string;
   tokenCount: number;
   embedding: number[];
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  embeddingDimension?: number;
   tags?: string[];
+}
+
+export interface SearchSimilarOptions {
+  topK?: number;
+  minScore?: number;
+  maxCandidates?: number;
+  embeddingProvider?: string;
+  embeddingDimension?: number;
 }
 
 export interface SearchResult {
@@ -56,65 +67,122 @@ export async function saveChunks(chunks: ChunkRecord[]): Promise<number> {
     }
   }
 
-  const operations = chunks.map((chunk) => ({
-    updateOne: {
-      filter: {
-        userId: chunk.userId,
-        documentId: chunk.documentId,
-        chunkIndex: chunk.chunkIndex,
+  const operations = chunks.map((chunk) => {
+    const dimension = chunk.embeddingDimension || chunk.embedding?.length || 384;
+    const provider = chunk.embeddingProvider || 'local';
+    const model = chunk.embeddingModel || (provider === 'local' ? 'deterministic-ngram-384' : 'text-embedding-004');
+
+    return {
+      updateOne: {
+        filter: {
+          userId: chunk.userId,
+          documentId: chunk.documentId,
+          chunkIndex: chunk.chunkIndex,
+        },
+        update: {
+          $set: {
+            ...chunk,
+            embeddingDimension: dimension,
+            embeddingProvider: provider,
+            embeddingModel: model,
+          },
+        },
+        upsert: true,
       },
-      update: { $set: chunk },
-      upsert: true,
-    },
-  }));
+    };
+  });
 
   const result = await DocumentChunk.bulkWrite(operations);
   return (result.upsertedCount || 0) + (result.modifiedCount || 0);
 }
 
 /**
- * Performs cosine similarity search across the authenticated user's document chunks only.
+ * Performs scalable, tenant-isolated vector similarity search.
+ * Bounded by candidate scan limits, matching embedding dimensions, and top-K heap sorting.
  */
 export async function searchSimilar(
   queryEmbedding: number[],
   userId: string,
-  topK: number = 3,
-  minScore: number = 0.15
+  topKOrOptions: number | SearchSimilarOptions = 3,
+  minScoreParam: number = 0.15
 ): Promise<SearchResult[]> {
   if (!userId || userId.trim() === '') {
     throw new Error('Tenant Violation: User ID is required to query vector store');
   }
 
+  if (!queryEmbedding || queryEmbedding.length === 0) {
+    return [];
+  }
+
+  const options: SearchSimilarOptions =
+    typeof topKOrOptions === 'number'
+      ? { topK: topKOrOptions, minScore: minScoreParam }
+      : topKOrOptions;
+
+  const topK = options.topK ?? 3;
+  const minScore = options.minScore ?? 0.15;
+  const maxCandidates = options.maxCandidates ?? 1000;
+  const targetDimension = options.embeddingDimension ?? queryEmbedding.length;
+
   await dbConnect();
 
-  // Strictly filter by userId to guarantee tenant isolation
-  const chunks = await DocumentChunk.find({ userId: userId.trim() })
-    .select('documentId title chunkIndex content embedding')
+  // Query filter strictly scoped to the tenant AND matching embedding dimension
+  const queryFilter: Record<string, any> = {
+    userId: userId.trim(),
+    embeddingDimension: targetDimension,
+  };
+
+  if (options.embeddingProvider) {
+    queryFilter.embeddingProvider = options.embeddingProvider;
+  }
+
+  // Scalable projection: limit scanned candidates and sort by newest first
+  const chunks = await DocumentChunk.find(queryFilter)
+    .select('documentId title chunkIndex content embedding embeddingDimension embeddingProvider')
+    .sort({ createdAt: -1 })
+    .limit(maxCandidates)
     .lean<IDocumentChunk[]>();
 
   if (!chunks || chunks.length === 0) {
     return [];
   }
 
-  const scored: SearchResult[] = [];
+  // Bounded Top-K selection (keeps memory bounded to O(topK))
+  const topResults: SearchResult[] = [];
 
   for (const chunk of chunks) {
-    if (!chunk.embedding || chunk.embedding.length === 0) continue;
+    if (!chunk.embedding || chunk.embedding.length !== queryEmbedding.length) {
+      continue;
+    }
+
     const score = cosineSimilarity(queryEmbedding, chunk.embedding);
-    if (score >= minScore) {
-      scored.push({
-        documentId: chunk.documentId,
-        title: chunk.title,
-        chunkIndex: chunk.chunkIndex,
-        content: chunk.content,
-        score: Math.round(score * 1000) / 1000,
-      });
+    if (score < minScore) {
+      continue;
+    }
+
+    const candidate: SearchResult = {
+      documentId: chunk.documentId,
+      title: chunk.title,
+      chunkIndex: chunk.chunkIndex,
+      content: chunk.content,
+      score: Math.round(score * 1000) / 1000,
+    };
+
+    // Insert sorted
+    const insertIdx = topResults.findIndex((r) => r.score < candidate.score);
+    if (insertIdx === -1) {
+      if (topResults.length < topK) {
+        topResults.push(candidate);
+      }
+    } else {
+      topResults.splice(insertIdx, 0, candidate);
+      if (topResults.length > topK) {
+        topResults.pop();
+      }
     }
   }
 
-  // Sort descending by similarity score and take topK
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK);
+  return topResults;
 }
 
 /**
