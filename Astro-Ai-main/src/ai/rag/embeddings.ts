@@ -10,7 +10,12 @@
 
 import crypto from 'crypto';
 
-export const EMBEDDING_DIMENSION = 128;
+export const EMBEDDING_DIMENSION = 384;
+
+const STOP_WORDS = new Set([
+  'the', 'is', 'at', 'which', 'on', 'and', 'a', 'an', 'in', 'to', 'for', 'of', 'or', 'by',
+  'with', 'as', 'into', 'using', 'from', 'that', 'this', 'are', 'was', 'were', 'it', 'its'
+]);
 
 /**
  * Calculates cosine similarity between two dense vectors
@@ -64,28 +69,27 @@ function generateLocalEmbedding(text: string): number[] {
     return vector;
   }
 
-  // Tokenize into words and punctuation
-  const words = normalizedText.split(/[\s,.;:!?()\[\]{}"'`/\\]+/).filter(Boolean);
+  // Tokenize into words and filter stop words
+  const words = normalizedText
+    .split(/[\s,.;:!?()\[\]{}"'`/\\]+/)
+    .filter((w) => w && w.length > 1 && !STOP_WORDS.has(w));
 
-  // 1. Unigram feature projection with positional dampening
-  for (let idx = 0; idx < words.length; idx++) {
-    const word = words[idx];
-    const hash = crypto.createHash('sha256').update(word).digest();
+  // 1. Unigram feature projection with basic suffix stemming
+  for (const word of words) {
+    const stem = word.replace(/(ing|ed|es|s)$/, '');
+    const hash = crypto.createHash('sha256').update(stem).digest();
     const bucket = hash.readUInt16BE(0) % EMBEDDING_DIMENSION;
-    const sign = (hash.readUInt8(2) % 2 === 0) ? 1 : -1;
-    // Log-dampened term frequency + position weight
-    const weight = (1 / Math.log2(idx + 2)) * Math.min(word.length, 12);
-    vector[bucket] += sign * weight;
-  }
+    vector[bucket] += 1.0 + Math.log(1 + stem.length);
 
-  // 2. Character n-gram projection for morphological & subword similarity
-  const nGramSize = 3;
-  for (let i = 0; i <= normalizedText.length - nGramSize; i++) {
-    const ngram = normalizedText.slice(i, i + nGramSize);
-    const hash = crypto.createHash('md5').update(ngram).digest();
-    const bucket = hash.readUInt16BE(0) % EMBEDDING_DIMENSION;
-    const sign = (hash.readUInt8(2) % 2 === 0) ? 1 : -1;
-    vector[bucket] += sign * 0.4;
+    // 2. Character 3-grams of significant stem tokens for morphological similarity
+    if (stem.length >= 3) {
+      for (let i = 0; i <= stem.length - 3; i++) {
+        const ngram = stem.slice(i, i + 3);
+        const nhash = crypto.createHash('md5').update(ngram).digest();
+        const nbucket = nhash.readUInt16BE(0) % EMBEDDING_DIMENSION;
+        vector[nbucket] += 0.4;
+      }
+    }
   }
 
   return l2Normalize(vector);
