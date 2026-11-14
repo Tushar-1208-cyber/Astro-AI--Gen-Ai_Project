@@ -82,6 +82,7 @@ import { generateVideoFlowAction } from "@/ai/flows/generate-video";
 import { getAuthenticatedUser } from "./auth";
 import { sanitizeErrorMessage } from "./security";
 import { dashboardRepo, attendanceRepo } from "./db-repo";
+import { ingestDocument, askWithRAG, removeDocument, getUserDocuments } from "@/ai/rag/rag-engine";
 
 
 // Wrapper function to handle Genkit flow execution and error handling
@@ -544,3 +545,78 @@ export async function getDashboardStatsAction() {
         return { success: false, error: message };
     }
 }
+
+// ============================================================================
+// RAG (RETRIEVAL-AUGMENTED GENERATION) ACTIONS
+// ============================================================================
+
+export async function ingestDocumentAction(input: { title: string; content: string; tags?: string[] }) {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+        return { success: false, error: "Authentication required. Please log in." };
+    }
+
+    try {
+        const result = await ingestDocument({
+            userId: user.userId,
+            title: input.title,
+            content: input.content,
+            tags: input.tags,
+        });
+        return { success: true, data: result };
+    } catch (error) {
+        const message = sanitizeErrorMessage(error);
+        return { success: false, error: message };
+    }
+}
+
+export async function askWithRAGAction(input: { question: string; language?: string; topK?: number }) {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+        return { success: false, error: "Authentication required. Please log in." };
+    }
+
+    try {
+        const result = await askWithRAG({
+            question: input.question,
+            userId: user.userId,
+            language: input.language,
+            topK: input.topK,
+        });
+        return { success: true, data: result };
+    } catch (error) {
+        const message = sanitizeErrorMessage(error);
+        return { success: false, error: message };
+    }
+}
+
+export async function deleteDocumentAction(documentId: string) {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+        return { success: false, error: "Authentication required. Please log in." };
+    }
+
+    try {
+        const result = await removeDocument(documentId, user.userId);
+        return { success: true, data: result };
+    } catch (error) {
+        const message = sanitizeErrorMessage(error);
+        return { success: false, error: message };
+    }
+}
+
+export async function getUserDocumentsAction() {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+        return { success: false, error: "Authentication required. Please log in." };
+    }
+
+    try {
+        const documents = await getUserDocuments(user.userId);
+        return { success: true, data: documents };
+    } catch (error) {
+        const message = sanitizeErrorMessage(error);
+        return { success: false, error: message };
+    }
+}
+
