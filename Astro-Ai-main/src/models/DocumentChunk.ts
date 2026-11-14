@@ -10,6 +10,9 @@ export interface IDocumentChunk extends Document {
   content: string;
   tokenCount: number;
   embedding: number[];
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingDimension: number;
   tags: string[];
   createdAt: Date;
   updatedAt: Date;
@@ -58,6 +61,25 @@ const DocumentChunkSchema = new Schema<IDocumentChunk>(
       type: [Number],
       default: [],
     },
+    embeddingProvider: {
+      type: String,
+      required: true,
+      default: 'local',
+      index: true,
+      trim: true,
+    },
+    embeddingModel: {
+      type: String,
+      required: true,
+      default: 'deterministic-ngram-384',
+      trim: true,
+    },
+    embeddingDimension: {
+      type: Number,
+      required: true,
+      default: 384,
+      index: true,
+    },
     tags: {
       type: [String],
       default: [],
@@ -77,8 +99,10 @@ const DocumentChunkSchema = new Schema<IDocumentChunk>(
   }
 );
 
-// Compound index for tenant-scoped document retrieval and efficient deletion
+// Compound indexes for scalable tenant-scoped document retrieval, dimension matching, and deletion
+DocumentChunkSchema.index({ userId: 1, embeddingProvider: 1, embeddingDimension: 1 });
 DocumentChunkSchema.index({ userId: 1, documentId: 1, chunkIndex: 1 });
+DocumentChunkSchema.index({ userId: 1, createdAt: -1 });
 
 const DocumentChunk: Model<IDocumentChunk> =
   mongoose.models.DocumentChunk || mongoose.model<IDocumentChunk>('DocumentChunk', DocumentChunkSchema);
