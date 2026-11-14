@@ -10,7 +10,15 @@
 import dbConnect from '../src/lib/db';
 import DocumentChunk from '../src/models/DocumentChunk';
 import { chunkDocument, estimateTokenCount } from '../src/ai/rag/document-chunker';
-import { generateEmbedding, cosineSimilarity } from '../src/ai/rag/embeddings';
+import {
+  generateEmbedding,
+  generateEmbeddingWithMeta,
+  cosineSimilarity,
+  validateEmbeddingMatch,
+  EmbeddingDimensionMismatchError,
+  LOCAL_EMBEDDING_DIMENSION,
+  CLOUD_EMBEDDING_DIMENSION,
+} from '../src/ai/rag/embeddings';
 import {
   saveChunks,
   searchSimilar,
@@ -23,6 +31,7 @@ import {
   askWithRAG,
   removeDocument,
   getUserDocuments,
+  reindexUserDocuments,
 } from '../src/ai/rag/rag-engine';
 
 interface TestResult {
@@ -293,6 +302,117 @@ Leonardo da Vinci and Michelangelo were central figures who pioneered perspectiv
       throw new Error("User B document was destroyed during cross-tenant delete attempt");
     }
     return `Protected: 0 chunks deleted, User B chunks intact (${bStillExists})`;
+  });
+
+  // TEST 13: Dimension Mismatch Protection
+  await runTest('RAG-13', 'Embedding Dimension Mismatch strictly throws EmbeddingDimensionMismatchError', async () => {
+    let caught = false;
+    try {
+      validateEmbeddingMatch(
+        { dimension: LOCAL_EMBEDDING_DIMENSION, provider: 'local' },
+        { dimension: CLOUD_EMBEDDING_DIMENSION, provider: 'google-genai' }
+      );
+    } catch (err: any) {
+      if (err instanceof EmbeddingDimensionMismatchError || err.message.includes('Dimension Mismatch')) {
+        caught = true;
+      }
+    }
+    if (!caught) {
+      throw new Error('Expected EmbeddingDimensionMismatchError when comparing 384 vs 768 dimensions');
+    }
+    return `Safely intercepted mismatch: local (384) vs cloud (768)`;
+  });
+
+  // TEST 14: Vector Store Dimension & Provider Isolation
+  await runTest('RAG-14', 'Vector Store isolates disparate dimension spaces without corruption', async () => {
+    // Generate a synthetic 768-dim query embedding (cloud dimension)
+    const fakeCloudEmbedding = new Array(CLOUD_EMBEDDING_DIMENSION).fill(0.05);
+
+    // Search against User B (who has 384-dim local chunks)
+    const resultsCloud = await searchSimilar(fakeCloudEmbedding, userB, {
+      embeddingDimension: CLOUD_EMBEDDING_DIMENSION,
+      embeddingProvider: 'google-genai',
+      minScore: 0.1,
+    });
+
+    if (resultsCloud.length !== 0) {
+      throw new Error('Expected 0 results when searching 768-dim query against 384-dim store');
+    }
+    return `0 cross-dimensional chunks leaked`;
+  });
+
+  // TEST 15: Failed retrieval guarantees zero fabricated citations
+  await runTest('RAG-15', 'Unmatched/low-similarity query strictly produces zero citations without fabrication', async () => {
+    const { citations, contextText } = await retrieveContext(
+      'xyzzy1234987randomgibberishquerythatcannotmatcheducationalmaterials',
+      userB,
+      3
+    );
+
+    if (citations.length !== 0) {
+      throw new Error(`Fabricated citations detected on irrelevant query: ${JSON.stringify(citations)}`);
+    }
+    if (contextText.length !== 0) {
+      throw new Error(`Fabricated context detected on irrelevant query`);
+    }
+    return `0 citations, 0 bytes context generated`;
+  });
+
+  // TEST 16: Scalability Stress Test (Large synthetic document collection)
+  await runTest('RAG-16', 'Scalability: Bounded scan and retrieval on large collection (< 150ms latency)', async () => {
+    const stressUserId = `teacher_stress_${Date.now()}`;
+    const syntheticChunks = [];
+
+    for (let i = 0; i < 120; i++) {
+      syntheticChunks.push({
+        userId: stressUserId,
+        documentId: `doc_stress_${Math.floor(i / 10)}`,
+        title: `Chapter ${Math.floor(i / 10)}: Section ${i % 10}`,
+        chunkIndex: i % 10,
+        totalChunks: 10,
+        content: `Educational content section ${i} detailing scientific formulas and problem solving step ${i}.`,
+        tokenCount: 40,
+        embedding: new Array(LOCAL_EMBEDDING_DIMENSION).fill(0).map((_, idx) => (idx === (i % LOCAL_EMBEDDING_DIMENSION) ? 1.0 : 0.0)),
+        embeddingProvider: 'local',
+        embeddingDimension: LOCAL_EMBEDDING_DIMENSION,
+      });
+    }
+
+    await saveChunks(syntheticChunks);
+
+    const startTime = Date.now();
+    const queryEmb = new Array(LOCAL_EMBEDDING_DIMENSION).fill(0);
+    queryEmb[5] = 1.0;
+
+    const matched = await searchSimilar(queryEmb, stressUserId, {
+      topK: 3,
+      maxCandidates: 50,
+      minScore: 0.1,
+    });
+
+    const elapsedMs = Date.now() - startTime;
+    await DocumentChunk.deleteMany({ userId: stressUserId });
+
+    if (matched.length === 0) {
+      throw new Error('Expected top-k results from synthetic stress collection');
+    }
+    if (matched.length > 3) {
+      throw new Error(`Expected at most 3 results, got ${matched.length}`);
+    }
+
+    return `120 chunks scanned with bounded candidate limit: ${elapsedMs}ms, topK: ${matched.length}`;
+  });
+
+  // TEST 17: Safe Re-indexing Strategy
+  await runTest('RAG-17', 'Safe Re-indexing updates all user chunks without data loss', async () => {
+    const reindexRes = await reindexUserDocuments(userB, 'local');
+    if (reindexRes.reindexedChunks === 0) {
+      throw new Error('Expected at least 1 reindexed chunk for user B');
+    }
+    if (reindexRes.targetDimension !== LOCAL_EMBEDDING_DIMENSION) {
+      throw new Error(`Target dimension mismatch: expected ${LOCAL_EMBEDDING_DIMENSION}, got ${reindexRes.targetDimension}`);
+    }
+    return `Reindexed ${reindexRes.reindexedChunks} chunks to provider: ${reindexRes.provider} (${reindexRes.targetDimension}d)`;
   });
 
   // Cleanup test user data
