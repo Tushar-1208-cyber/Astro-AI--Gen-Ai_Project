@@ -9,7 +9,13 @@
 
 import crypto from 'crypto';
 import { chunkDocument } from './document-chunker';
-import { generateEmbedding } from './embeddings';
+import {
+  generateEmbedding,
+  generateEmbeddingWithMeta,
+  validateEmbeddingMatch,
+  EmbeddingMetadata,
+  EmbeddingDimensionMismatchError,
+} from './embeddings';
 import {
   saveChunks,
   searchSimilar,
@@ -18,6 +24,8 @@ import {
   ChunkRecord,
   DocumentSummary,
 } from './vector-store';
+import DocumentChunk, { IDocumentChunk } from '@/models/DocumentChunk';
+import dbConnect from '@/lib/db';
 import { executeTextGeneration } from '../provider';
 
 export interface IngestDocumentInput {
@@ -26,6 +34,7 @@ export interface IngestDocumentInput {
   content: string;
   userId: string;
   tags?: string[];
+  preferredProvider?: 'local' | 'google-genai';
 }
 
 export interface IngestDocumentOutput {
@@ -75,13 +84,13 @@ export async function ingestDocument(input: IngestDocumentInput): Promise<Ingest
     throw new Error('Document Chunking Failed: Document produced 0 chunks');
   }
 
-  // Embed all chunks
+  // Embed all chunks with provider metadata and dimension validation
   const chunkRecords: ChunkRecord[] = [];
   let totalTokens = 0;
 
   for (const rc of rawChunks) {
     totalTokens += rc.tokenCount;
-    const embedding = await generateEmbedding(rc.content);
+    const meta = await generateEmbeddingWithMeta(rc.content, input.preferredProvider);
     chunkRecords.push({
       userId,
       documentId,
@@ -90,7 +99,10 @@ export async function ingestDocument(input: IngestDocumentInput): Promise<Ingest
       totalChunks: rc.totalChunks,
       content: rc.content,
       tokenCount: rc.tokenCount,
-      embedding,
+      embedding: meta.embedding,
+      embeddingProvider: meta.provider,
+      embeddingModel: meta.model,
+      embeddingDimension: meta.dimension,
       tags: input.tags || [],
     });
   }
@@ -112,7 +124,7 @@ export async function ingestDocument(input: IngestDocumentInput): Promise<Ingest
 export async function retrieveContext(
   query: string,
   userId: string,
-  topK: number = 3
+  topKOrOptions: number | { topK?: number; preferredProvider?: 'local' | 'google-genai' } = 3
 ): Promise<{ citations: Citation[]; contextText: string }> {
   const trimmedQuery = (query || '').trim();
   const trimmedUserId = (userId || '').trim();
@@ -124,8 +136,20 @@ export async function retrieveContext(
     return { citations: [], contextText: '' };
   }
 
-  const queryEmbedding = await generateEmbedding(trimmedQuery);
-  const searchResults = await searchSimilar(queryEmbedding, trimmedUserId, topK);
+  const options =
+    typeof topKOrOptions === 'number'
+      ? { topK: topKOrOptions }
+      : topKOrOptions;
+
+  const topK = options.topK ?? 3;
+  const queryMeta = await generateEmbeddingWithMeta(trimmedQuery, options.preferredProvider);
+
+  // Scalable search with dimension and provider isolation:
+  const searchResults = await searchSimilar(queryMeta.embedding, trimmedUserId, {
+    topK,
+    embeddingDimension: queryMeta.dimension,
+    embeddingProvider: queryMeta.provider,
+  });
 
   const citations: Citation[] = searchResults.map((r) => ({
     documentId: r.documentId,
@@ -229,4 +253,44 @@ export async function removeDocument(
  */
 export async function getUserDocuments(userId: string): Promise<DocumentSummary[]> {
   return listUserDocuments(userId);
+}
+
+/**
+ * Re-indexes all document chunks for a tenant into a target embedding provider space.
+ * Provides a clean re-indexing strategy without data loss when migrating providers.
+ */
+export async function reindexUserDocuments(
+  userId: string,
+  targetProvider: 'local' | 'google-genai' = 'local'
+): Promise<{ reindexedChunks: number; targetDimension: number; provider: string }> {
+  if (!userId || userId.trim() === '') {
+    throw new Error('Tenant Violation: Authenticated user ID is required for re-indexing');
+  }
+
+  await dbConnect();
+
+  const chunks = await DocumentChunk.find({ userId: userId.trim() });
+  if (!chunks || chunks.length === 0) {
+    return { reindexedChunks: 0, targetDimension: targetProvider === 'local' ? 384 : 768, provider: targetProvider };
+  }
+
+  let reindexedCount = 0;
+  let targetDimension = 384;
+
+  for (const chunk of chunks) {
+    const meta = await generateEmbeddingWithMeta(chunk.content, targetProvider);
+    targetDimension = meta.dimension;
+    chunk.embedding = meta.embedding;
+    chunk.embeddingProvider = meta.provider;
+    chunk.embeddingModel = meta.model;
+    chunk.embeddingDimension = meta.dimension;
+    await chunk.save();
+    reindexedCount++;
+  }
+
+  return {
+    reindexedChunks: reindexedCount,
+    targetDimension,
+    provider: targetProvider,
+  };
 }
