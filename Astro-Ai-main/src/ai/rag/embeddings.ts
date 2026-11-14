@@ -10,7 +10,45 @@
 
 import crypto from 'crypto';
 
-export const EMBEDDING_DIMENSION = 384;
+export const LOCAL_EMBEDDING_DIMENSION = 384;
+export const CLOUD_EMBEDDING_DIMENSION = 768;
+export const EMBEDDING_DIMENSION = LOCAL_EMBEDDING_DIMENSION;
+
+export const LOCAL_EMBEDDING_MODEL = 'deterministic-ngram-384';
+export const CLOUD_EMBEDDING_MODEL = 'text-embedding-004';
+
+export interface EmbeddingMetadata {
+  embedding: number[];
+  provider: 'local' | 'google-genai';
+  model: string;
+  dimension: number;
+}
+
+export class EmbeddingDimensionMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EmbeddingDimensionMismatchError';
+  }
+}
+
+/**
+ * Validates that two embedding vectors or spaces have identical dimensions and matching providers
+ */
+export function validateEmbeddingMatch(
+  query: { dimension: number; provider?: string },
+  chunk: { dimension: number; provider?: string }
+): void {
+  if (query.dimension !== chunk.dimension) {
+    throw new EmbeddingDimensionMismatchError(
+      `Embedding Dimension Mismatch: Query vector dimension (${query.dimension}) does not match chunk vector dimension (${chunk.dimension}). Cannot calculate cosine similarity across disparate vector spaces.`
+    );
+  }
+  if (query.provider && chunk.provider && query.provider !== chunk.provider) {
+    throw new EmbeddingDimensionMismatchError(
+      `Embedding Provider Mismatch: Query provider (${query.provider}) does not match chunk index provider (${chunk.provider}).`
+    );
+  }
+}
 
 const STOP_WORDS = new Set([
   'the', 'is', 'at', 'which', 'on', 'and', 'a', 'an', 'in', 'to', 'for', 'of', 'or', 'by',
@@ -96,13 +134,17 @@ function generateLocalEmbedding(text: string): number[] {
 }
 
 /**
- * Primary embedding dispatcher.
- * Uses local vectorizer by default for privacy, deterministic testing, and offline reliability.
+ * Generates an embedding vector with complete provider and dimensionality metadata.
+ * Ensures consistent retrieval space and prevents cross-space dimension corruption.
  */
-export async function generateEmbedding(text: string): Promise<number[]> {
+export async function generateEmbeddingWithMeta(
+  text: string,
+  preferredProvider?: 'local' | 'google-genai'
+): Promise<EmbeddingMetadata> {
   const apiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY;
+  const wantCloud = preferredProvider === 'google-genai' || (process.env.USE_CLOUD_EMBEDDINGS === 'true' && preferredProvider !== 'local');
 
-  if (apiKey && apiKey.trim() !== '' && process.env.USE_CLOUD_EMBEDDINGS === 'true') {
+  if (wantCloud && apiKey && apiKey.trim() !== '') {
     try {
       const { ai } = await import('../genkit');
       const { textEmbedding004 } = await import('@genkit-ai/googleai');
@@ -113,13 +155,37 @@ export async function generateEmbedding(text: string): Promise<number[]> {
       if (result && Array.isArray(result) && result.length > 0) {
         const rawVec = (result[0] as any)?.embedding || result[0];
         if (Array.isArray(rawVec)) {
-          return l2Normalize(rawVec as number[]);
+          const normalized = l2Normalize(rawVec as number[]);
+          return {
+            embedding: normalized,
+            provider: 'google-genai',
+            model: CLOUD_EMBEDDING_MODEL,
+            dimension: normalized.length || CLOUD_EMBEDDING_DIMENSION,
+          };
         }
       }
     } catch (cloudErr) {
+      if (preferredProvider === 'google-genai') {
+        throw new Error(`Cloud embedding generation failed: ${cloudErr instanceof Error ? cloudErr.message : String(cloudErr)}`);
+      }
       console.warn('Cloud embedding attempt failed, falling back to local semantic vectorizer:', cloudErr);
     }
   }
 
-  return generateLocalEmbedding(text);
+  const localVec = generateLocalEmbedding(text);
+  return {
+    embedding: localVec,
+    provider: 'local',
+    model: LOCAL_EMBEDDING_MODEL,
+    dimension: LOCAL_EMBEDDING_DIMENSION,
+  };
+}
+
+/**
+ * Primary embedding dispatcher.
+ * Returns normalized vector array for backwards compatibility.
+ */
+export async function generateEmbedding(text: string): Promise<number[]> {
+  const meta = await generateEmbeddingWithMeta(text);
+  return meta.embedding;
 }
