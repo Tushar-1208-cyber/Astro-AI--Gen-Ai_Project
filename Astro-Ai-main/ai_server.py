@@ -79,6 +79,7 @@ class ChatRequest(BaseModel):
     temperature: float = 0.7
 
 @app.get("/")
+@app.get("/health")
 def health_check():
     return {
         "status": "ready" if model else "loading/error",
