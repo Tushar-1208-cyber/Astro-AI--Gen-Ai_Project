@@ -1,19 +1,32 @@
-version: '3.8'
-
 services:
-  # 1. Astro AI - Persistent MongoDB Database
+  # 1. Astro AI - Persistent MongoDB Database with Authenticated Access
   mongodb:
     image: mongo:7.0
     container_name: astro-mongodb
     restart: unless-stopped
+    # Restrict port exposure strictly to localhost on host; remove or omit in strict container-only networks
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     environment:
-      MONGO_INITDB_DATABASE: astro
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-astro_admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-astro_secure_pass_change_me}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE:-astro}
     volumes:
       - mongo_data:/data/db
+    networks:
+      - astro-network
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test:
+        - "CMD"
+        - "mongosh"
+        - "-u"
+        - "${MONGO_INITDB_ROOT_USERNAME:-astro_admin}"
+        - "-p"
+        - "${MONGO_INITDB_ROOT_PASSWORD:-astro_secure_pass_change_me}"
+        - "--authenticationDatabase"
+        - "admin"
+        - "--eval"
+        - "db.adminCommand('ping')"
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,13 +38,17 @@ services:
       dockerfile: Dockerfile.ai
     container_name: astro-ai-engine
     restart: unless-stopped
+    # Restrict inference port strictly to localhost on host
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - HOST=0.0.0.0
       - PORT=8000
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:9002,http://app:9002}
     volumes:
       - ./my_finetuned_model:/app/my_finetuned_model:ro
+    networks:
+      - astro-network
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
@@ -51,8 +68,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=9002
-      - MONGODB_URI=mongodb://mongodb:27017/astro
+      - JWT_SECRET=${JWT_SECRET:-}
+      - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_INITDB_ROOT_USERNAME:-astro_admin}:${MONGO_INITDB_ROOT_PASSWORD:-astro_secure_pass_change_me}@mongodb:27017/${MONGO_DATABASE:-astro}?authSource=admin}
       - LOCAL_AI_URL=http://local-ai:8000/generate
+      - GOOGLE_GENAI_API_KEY=${GOOGLE_GENAI_API_KEY:-}
     depends_on:
       mongodb:
         condition: service_healthy
@@ -61,6 +80,13 @@ services:
     volumes:
       - uploads_data:/app/uploads
       - backups_data:/app/backups
+    networks:
+      - astro-network
+
+networks:
+  astro-network:
+    name: astro-internal-network
+    driver: bridge
 
 volumes:
   mongo_data:
