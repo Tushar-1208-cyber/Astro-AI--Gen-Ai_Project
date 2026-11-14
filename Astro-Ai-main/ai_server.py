@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
@@ -65,25 +65,30 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI with the lifespan handler
 app = FastAPI(lifespan=lifespan)
 
-# Enable CORS for Next.js frontend
+# Restrict CORS to configured application origins
+allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:9002,http://app:9002")
+allowed_origins = [orig.strip() for orig in allowed_origins_env.split(",") if orig.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=allowed_origins if allowed_origins else ["http://localhost:9002"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
 class ChatRequest(BaseModel):
-    prompt: str
-    max_tokens: int = 1024  # Increased for complex educational content
-    temperature: float = 0.7
+    prompt: str = Field(..., min_length=1, max_length=20000, description="Generation input prompt")
+    max_tokens: int = Field(default=1024, ge=1, le=2048, description="Maximum tokens to generate")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
 
 @app.get("/")
 @app.get("/health")
 def health_check():
+    is_ready = model is not None and tokenizer is not None
     return {
-        "status": "ready" if model else "loading/error",
-        "model": "TinyLlama-Finetuned" if model else "none"
+        "status": "ready" if is_ready else "loading/error",
+        "model": "TinyLlama-Finetuned" if is_ready else "none"
     }
 
 @app.post("/generate")
@@ -129,8 +134,9 @@ async def generate_text(request: ChatRequest):
         return {"response": response}
     
     except Exception as e:
-        print(f"Error during generation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Internal generation error: {e}")
+        # Sanitize exception message to prevent leaking internal stack traces or paths
+        raise HTTPException(status_code=500, detail="Internal inference error during text generation.")
 
 if __name__ == "__main__":
     import uvicorn
