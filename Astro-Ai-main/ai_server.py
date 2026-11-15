@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -86,10 +87,22 @@ class ChatRequest(BaseModel):
 @app.get("/health")
 def health_check():
     is_ready = model is not None and tokenizer is not None
-    return {
-        "status": "ready" if is_ready else "loading/error",
-        "model": "TinyLlama-Finetuned" if is_ready else "none"
-    }
+    if is_ready:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "ready",
+                "model": "TinyLlama-Finetuned"
+            }
+        )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": "loading",
+            "model": "none",
+            "detail": "Model is loading or initialization failed"
+        }
+    )
 
 @app.post("/generate")
 async def generate_text(request: ChatRequest):
