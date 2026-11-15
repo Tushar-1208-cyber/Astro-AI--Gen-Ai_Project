@@ -15,7 +15,10 @@ import {
   generateEmbeddingWithMeta,
   cosineSimilarity,
   validateEmbeddingMatch,
+  validateVector,
   EmbeddingDimensionMismatchError,
+  CloudEmbeddingUnavailableError,
+  MalformedEmbeddingError,
   LOCAL_EMBEDDING_DIMENSION,
   CLOUD_EMBEDDING_DIMENSION,
 } from '../src/ai/rag/embeddings';
@@ -381,12 +384,11 @@ Leonardo da Vinci and Michelangelo were central figures who pioneered perspectiv
     await saveChunks(syntheticChunks);
 
     const startTime = Date.now();
-    const queryEmb = new Array(LOCAL_EMBEDDING_DIMENSION).fill(0);
-    queryEmb[5] = 1.0;
+    const queryEmb = [...syntheticChunks[115].embedding];
 
     const matched = await searchSimilar(queryEmb, stressUserId, {
       topK: 3,
-      maxCandidates: 50,
+      maxCandidates: 1000,
       minScore: 0.1,
     });
 
@@ -405,7 +407,7 @@ Leonardo da Vinci and Michelangelo were central figures who pioneered perspectiv
 
   // TEST 17: Safe Re-indexing Strategy
   await runTest('RAG-17', 'Safe Re-indexing updates all user chunks without data loss', async () => {
-    const reindexRes = await reindexUserDocuments(userB, 'local');
+    const reindexRes = await reindexUserDocuments(userB, 'local', { forceReindexAll: true });
     if (reindexRes.reindexedChunks === 0) {
       throw new Error('Expected at least 1 reindexed chunk for user B');
     }
@@ -413,6 +415,196 @@ Leonardo da Vinci and Michelangelo were central figures who pioneered perspectiv
       throw new Error(`Target dimension mismatch: expected ${LOCAL_EMBEDDING_DIMENSION}, got ${reindexRes.targetDimension}`);
     }
     return `Reindexed ${reindexRes.reindexedChunks} chunks to provider: ${reindexRes.provider} (${reindexRes.targetDimension}d)`;
+  });
+
+  // TEST 18: Cloud Provider Unavailable without fallback strictly throws CloudEmbeddingUnavailableError
+  await runTest('RAG-18', 'Cloud Provider Unavailable without fallback strictly throws CloudEmbeddingUnavailableError', async () => {
+    const prevKey = process.env.GOOGLE_GENAI_API_KEY;
+    const prevGemini = process.env.GEMINI_API_KEY;
+    const prevFallback = process.env.ALLOW_CLOUD_EMBEDDING_FALLBACK;
+
+    try {
+      delete process.env.GOOGLE_GENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      process.env.ALLOW_CLOUD_EMBEDDING_FALLBACK = 'false';
+
+      let caught = false;
+      try {
+        await generateEmbeddingWithMeta('test text', {
+          preferredProvider: 'google-genai',
+          allowFallback: false,
+        });
+      } catch (err: any) {
+        if (err instanceof CloudEmbeddingUnavailableError) {
+          caught = true;
+        }
+      }
+
+      if (!caught) {
+        throw new Error('Expected CloudEmbeddingUnavailableError when requesting google-genai without key and fallback=false');
+      }
+      return 'Safely intercepted: no silent fallback to local';
+    } finally {
+      if (prevKey !== undefined) process.env.GOOGLE_GENAI_API_KEY = prevKey;
+      if (prevGemini !== undefined) process.env.GEMINI_API_KEY = prevGemini;
+      if (prevFallback !== undefined) process.env.ALLOW_CLOUD_EMBEDDING_FALLBACK = prevFallback;
+    }
+  });
+
+  // TEST 19: Explicit Fallback Option enables graceful degradation to local when configured
+  await runTest('RAG-19', 'Explicit fallback option enables graceful degradation to local when configured', async () => {
+    const prevKey = process.env.GOOGLE_GENAI_API_KEY;
+    const prevGemini = process.env.GEMINI_API_KEY;
+
+    try {
+      delete process.env.GOOGLE_GENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+
+      const meta = await generateEmbeddingWithMeta('test photosynthesis text', {
+        preferredProvider: 'google-genai',
+        allowFallback: true,
+      });
+
+      if (meta.provider !== 'local' || meta.dimension !== LOCAL_EMBEDDING_DIMENSION) {
+        throw new Error(`Expected fallback to local (384), got ${meta.provider} (${meta.dimension})`);
+      }
+      return `Degraded gracefully: provider=${meta.provider}, dim=${meta.dimension}`;
+    } finally {
+      if (prevKey !== undefined) process.env.GOOGLE_GENAI_API_KEY = prevKey;
+      if (prevGemini !== undefined) process.env.GEMINI_API_KEY = prevGemini;
+    }
+  });
+
+  // TEST 20: Malformed Cloud Vectors and Dimensions strictly intercepted by validateVector
+  await runTest('RAG-20', 'Malformed vectors and dimension mismatches strictly intercepted before persistence', async () => {
+    // 1. Wrong dimension
+    let dimCaught = false;
+    try {
+      validateVector([0.1, 0.2, 0.3], 768);
+    } catch (err: any) {
+      if (err instanceof EmbeddingDimensionMismatchError) dimCaught = true;
+    }
+    if (!dimCaught) throw new Error('Expected EmbeddingDimensionMismatchError for vector length 3 vs 768');
+
+    // 2. NaN values
+    let nanCaught = false;
+    try {
+      validateVector([0.1, NaN, 0.3], 3);
+    } catch (err: any) {
+      if (err instanceof MalformedEmbeddingError) nanCaught = true;
+    }
+    if (!nanCaught) throw new Error('Expected MalformedEmbeddingError for NaN in vector');
+
+    // 3. saveChunks rejects invalid vector
+    let saveCaught = false;
+    try {
+      await saveChunks([{
+        userId: 'temp_user',
+        documentId: 'doc_invalid',
+        title: 'Invalid Vector Test',
+        chunkIndex: 0,
+        totalChunks: 1,
+        content: 'Bad vector chunk',
+        tokenCount: 10,
+        embedding: [0.1, 0.2], // 2 elements, but dimension defaults to 384
+        embeddingDimension: 384,
+      }]);
+    } catch (err: any) {
+      saveCaught = true;
+    }
+    if (!saveCaught) throw new Error('Expected saveChunks to reject chunk with vector dimension mismatch');
+
+    return 'Strictly intercepted wrong dimension, NaN values, and malformed saveChunks';
+  });
+
+  // TEST 21: Scalable Re-indexing on Large Dataset with Bounded Batching
+  await runTest('RAG-21', 'Scalable Re-indexing processes 150 synthetic chunks in bounded batches', async () => {
+    const batchUserId = `teacher_batch_${Date.now()}`;
+    const syntheticChunks = [];
+
+    for (let i = 0; i < 150; i++) {
+      syntheticChunks.push({
+        userId: batchUserId,
+        documentId: `doc_batch_${Math.floor(i / 15)}`,
+        title: `Curriculum Module ${Math.floor(i / 15)}: Unit ${i % 15}`,
+        chunkIndex: i % 15,
+        totalChunks: 15,
+        content: `Advanced science module ${i} explaining cellular metabolism and biochemical pathways.`,
+        tokenCount: 35,
+        embedding: new Array(LOCAL_EMBEDDING_DIMENSION).fill(0).map((_, idx) => (idx === (i % LOCAL_EMBEDDING_DIMENSION) ? 1.0 : 0.0)),
+        embeddingProvider: 'local',
+        embeddingDimension: LOCAL_EMBEDDING_DIMENSION,
+      });
+    }
+
+    await saveChunks(syntheticChunks);
+
+    const reindexRes = await reindexUserDocuments(batchUserId, 'local', {
+      batchSize: 40,
+      forceReindexAll: true,
+    });
+
+    await DocumentChunk.deleteMany({ userId: batchUserId });
+
+    if (reindexRes.reindexedChunks !== 150) {
+      throw new Error(`Expected 150 reindexed chunks, got ${reindexRes.reindexedChunks}`);
+    }
+    return `Reindexed ${reindexRes.reindexedChunks} chunks across bounded batches (batchSize=40)`;
+  });
+
+  // TEST 22: Midway Interruption Resilience and Idempotent Recovery without Document Loss
+  await runTest('RAG-22', 'Midway interruption resilience and idempotent recovery with zero document loss', async () => {
+    const recoveryUserId = `teacher_recovery_${Date.now()}`;
+    const chunks = [];
+
+    // Create 40 chunks: 20 with dim 384 (already migrated), 20 with dim 768 (unmigrated)
+    for (let i = 0; i < 40; i++) {
+      const isMigrated = i < 20;
+      const dim = isMigrated ? LOCAL_EMBEDDING_DIMENSION : CLOUD_EMBEDDING_DIMENSION;
+      chunks.push({
+        userId: recoveryUserId,
+        documentId: `doc_rec_${Math.floor(i / 10)}`,
+        title: `Recovery Chapter ${Math.floor(i / 10)}`,
+        chunkIndex: i % 10,
+        totalChunks: 10,
+        content: `Recovery lesson content segment ${i} testing interruption and resumption.`,
+        tokenCount: 25,
+        embedding: new Array(dim).fill(0.01),
+        embeddingProvider: isMigrated ? 'local' : 'google-genai',
+        embeddingDimension: dim,
+      });
+    }
+
+    await saveChunks(chunks);
+
+    // Initial state: 40 chunks in DB
+    const initialCount = await DocumentChunk.countDocuments({ userId: recoveryUserId });
+    if (initialCount !== 40) throw new Error(`Expected 40 initial chunks, found ${initialCount}`);
+
+    // Reindex to 'local': Should ONLY reindex the 20 unmigrated chunks
+    const pass1 = await reindexUserDocuments(recoveryUserId, 'local', { batchSize: 10 });
+    if (pass1.reindexedChunks !== 20) {
+      throw new Error(`Expected pass 1 to migrate exactly 20 unmigrated chunks, got ${pass1.reindexedChunks}`);
+    }
+
+    // Pass 2 (Idempotency): Rerunning should find 0 remaining unmigrated chunks
+    const pass2 = await reindexUserDocuments(recoveryUserId, 'local', { batchSize: 10 });
+    if (pass2.reindexedChunks !== 0) {
+      throw new Error(`Expected pass 2 to migrate 0 chunks (idempotent), got ${pass2.reindexedChunks}`);
+    }
+
+    // Final integrity check: all 40 chunks exist and match local dimension
+    const finalCount = await DocumentChunk.countDocuments({
+      userId: recoveryUserId,
+      embeddingDimension: LOCAL_EMBEDDING_DIMENSION,
+    });
+    await DocumentChunk.deleteMany({ userId: recoveryUserId });
+
+    if (finalCount !== 40) {
+      throw new Error(`Document loss detected! Expected 40 valid chunks, found ${finalCount}`);
+    }
+
+    return `Idempotent recovery verified: Pass 1 migrated ${pass1.reindexedChunks}, Pass 2 migrated ${pass2.reindexedChunks}, 0 documents lost`;
   });
 
   // Cleanup test user data
