@@ -9,7 +9,7 @@
 
 import dbConnect from '@/lib/db';
 import DocumentChunk, { IDocumentChunk } from '@/models/DocumentChunk';
-import { cosineSimilarity } from './embeddings';
+import { cosineSimilarity, validateVector } from './embeddings';
 
 export interface ChunkRecord {
   userId: string;
@@ -60,11 +60,13 @@ export async function saveChunks(chunks: ChunkRecord[]): Promise<number> {
 
   await dbConnect();
 
-  // Validate that all chunks have a userId
+  // Validate that all chunks have a userId and valid embedding vector before persistence
   for (const c of chunks) {
     if (!c.userId || c.userId.trim() === '') {
       throw new Error('Tenant Violation: Cannot save document chunk without authenticated userId');
     }
+    const dimension = c.embeddingDimension || c.embedding?.length || 384;
+    validateVector(c.embedding, dimension);
   }
 
   const operations = chunks.map((chunk) => {
