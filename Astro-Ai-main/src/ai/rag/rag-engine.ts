@@ -314,11 +314,18 @@ export async function reindexUserDocuments(
   }
 
   let reindexedCount = 0;
+  let lastSeenId: any = null;
   let hasMore = true;
 
-  // Process in bounded batches: each batch is fetched, embedded, validated, and updated atomically
+  // Process in bounded batches using keyset pagination: each batch is fetched, embedded, validated, and updated
   while (hasMore) {
-    const batch = await DocumentChunk.find(filter)
+    const query: Record<string, any> = { ...filter };
+    if (lastSeenId) {
+      query._id = { $gt: lastSeenId };
+    }
+
+    const batch = await DocumentChunk.find(query)
+      .sort({ _id: 1 })
       .limit(batchSize)
       .exec();
 
@@ -326,6 +333,8 @@ export async function reindexUserDocuments(
       hasMore = false;
       break;
     }
+
+    lastSeenId = batch[batch.length - 1]._id;
 
     const bulkOps = [];
     for (const chunk of batch) {
