@@ -73,6 +73,7 @@ export async function saveChunks(chunks: ChunkRecord[]): Promise<number> {
     const dimension = chunk.embeddingDimension || chunk.embedding?.length || 384;
     const provider = chunk.embeddingProvider || 'local';
     const model = chunk.embeddingModel || (provider === 'local' ? 'deterministic-ngram-384' : 'text-embedding-004');
+    const now = new Date();
 
     return {
       updateOne: {
@@ -87,6 +88,10 @@ export async function saveChunks(chunks: ChunkRecord[]): Promise<number> {
             embeddingDimension: dimension,
             embeddingProvider: provider,
             embeddingModel: model,
+            updatedAt: now,
+          },
+          $setOnInsert: {
+            createdAt: now,
           },
         },
         upsert: true,
