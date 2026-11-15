@@ -24,10 +24,46 @@ export interface EmbeddingMetadata {
   dimension: number;
 }
 
+export interface EmbeddingOptions {
+  preferredProvider?: 'local' | 'google-genai';
+  allowFallback?: boolean;
+}
+
 export class EmbeddingDimensionMismatchError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'EmbeddingDimensionMismatchError';
+  }
+}
+
+export class CloudEmbeddingUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CloudEmbeddingUnavailableError';
+  }
+}
+
+export class MalformedEmbeddingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MalformedEmbeddingError';
+  }
+}
+
+/**
+ * Validates that a vector is a non-empty array of finite numbers with the expected dimension
+ */
+export function validateVector(vec: number[], expectedDimension: number): void {
+  if (!vec || !Array.isArray(vec)) {
+    throw new MalformedEmbeddingError('Embedding vector must be a non-null array of numbers');
+  }
+  if (vec.length !== expectedDimension) {
+    throw new EmbeddingDimensionMismatchError(
+      `Vector dimension mismatch: expected ${expectedDimension}, got ${vec.length}`
+    );
+  }
+  if (!vec.every((v) => typeof v === 'number' && !isNaN(v) && isFinite(v))) {
+    throw new MalformedEmbeddingError('Embedding vector contains NaN or non-finite values');
   }
 }
 
@@ -136,43 +172,97 @@ function generateLocalEmbedding(text: string): number[] {
 /**
  * Generates an embedding vector with complete provider and dimensionality metadata.
  * Ensures consistent retrieval space and prevents cross-space dimension corruption.
+ * Making cloud-to-local fallback an explicit configuration choice (ALLOW_CLOUD_EMBEDDING_FALLBACK).
  */
 export async function generateEmbeddingWithMeta(
   text: string,
-  preferredProvider?: 'local' | 'google-genai'
+  preferredProviderOrOptions?: 'local' | 'google-genai' | EmbeddingOptions
 ): Promise<EmbeddingMetadata> {
-  const apiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY;
-  const wantCloud = preferredProvider === 'google-genai' || (process.env.USE_CLOUD_EMBEDDINGS === 'true' && preferredProvider !== 'local');
+  const options: EmbeddingOptions =
+    typeof preferredProviderOrOptions === 'string'
+      ? { preferredProvider: preferredProviderOrOptions }
+      : (preferredProviderOrOptions || {});
 
-  if (wantCloud && apiKey && apiKey.trim() !== '') {
-    try {
-      const { ai } = await import('../genkit');
-      const { textEmbedding004 } = await import('@genkit-ai/googleai');
-      const result = await ai.embed({
-        embedder: textEmbedding004,
-        content: text,
-      });
-      if (result && Array.isArray(result) && result.length > 0) {
-        const rawVec = (result[0] as any)?.embedding || result[0];
-        if (Array.isArray(rawVec)) {
-          const normalized = l2Normalize(rawVec as number[]);
-          return {
-            embedding: normalized,
-            provider: 'google-genai',
-            model: CLOUD_EMBEDDING_MODEL,
-            dimension: normalized.length || CLOUD_EMBEDDING_DIMENSION,
-          };
+  const preferredProvider = options.preferredProvider;
+  const allowFallback =
+    options.allowFallback ?? (process.env.ALLOW_CLOUD_EMBEDDING_FALLBACK === 'true');
+
+  const apiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY;
+  const wantCloud =
+    preferredProvider === 'google-genai' ||
+    (process.env.USE_CLOUD_EMBEDDINGS === 'true' && preferredProvider !== 'local');
+
+  if (wantCloud) {
+    if (!apiKey || apiKey.trim() === '') {
+      if (!allowFallback) {
+        throw new CloudEmbeddingUnavailableError(
+          'Cloud embedding requested ("google-genai" / USE_CLOUD_EMBEDDINGS=true), but no Google GenAI API key is configured. Cloud fallback is disabled.'
+        );
+      }
+      console.warn(
+        'Cloud embedding API key missing, but fallback explicitly allowed. Falling back to local semantic vectorizer.'
+      );
+    } else {
+      try {
+        const { ai } = await import('../genkit');
+        const { textEmbedding004 } = await import('@genkit-ai/googleai');
+        const result = await ai.embed({
+          embedder: textEmbedding004,
+          content: text,
+        });
+
+        if (!result || !Array.isArray(result) || result.length === 0) {
+          throw new MalformedEmbeddingError('Cloud embedding returned empty or invalid response');
         }
+
+        const rawVec = (result[0] as any)?.embedding || result[0];
+        if (!Array.isArray(rawVec)) {
+          throw new MalformedEmbeddingError('Cloud embedding response does not contain an embedding array');
+        }
+
+        if (rawVec.length !== CLOUD_EMBEDDING_DIMENSION) {
+          throw new MalformedEmbeddingError(
+            `Cloud embedding dimension mismatch: expected ${CLOUD_EMBEDDING_DIMENSION}, got ${rawVec.length}`
+          );
+        }
+
+        if (!rawVec.every((v) => typeof v === 'number' && !isNaN(v) && isFinite(v))) {
+          throw new MalformedEmbeddingError('Cloud embedding contains non-numeric or non-finite values');
+        }
+
+        const normalized = l2Normalize(rawVec as number[]);
+        validateVector(normalized, CLOUD_EMBEDDING_DIMENSION);
+
+        return {
+          embedding: normalized,
+          provider: 'google-genai',
+          model: CLOUD_EMBEDDING_MODEL,
+          dimension: CLOUD_EMBEDDING_DIMENSION,
+        };
+      } catch (cloudErr) {
+        if (!allowFallback) {
+          if (
+            cloudErr instanceof CloudEmbeddingUnavailableError ||
+            cloudErr instanceof MalformedEmbeddingError ||
+            cloudErr instanceof EmbeddingDimensionMismatchError
+          ) {
+            throw cloudErr;
+          }
+          throw new CloudEmbeddingUnavailableError(
+            `Cloud embedding generation failed: ${cloudErr instanceof Error ? cloudErr.message : String(cloudErr)}`
+          );
+        }
+        console.warn(
+          'Cloud embedding attempt failed, but fallback explicitly enabled. Falling back to local semantic vectorizer:',
+          cloudErr
+        );
       }
-    } catch (cloudErr) {
-      if (preferredProvider === 'google-genai') {
-        throw new Error(`Cloud embedding generation failed: ${cloudErr instanceof Error ? cloudErr.message : String(cloudErr)}`);
-      }
-      console.warn('Cloud embedding attempt failed, falling back to local semantic vectorizer:', cloudErr);
     }
   }
 
   const localVec = generateLocalEmbedding(text);
+  validateVector(localVec, LOCAL_EMBEDDING_DIMENSION);
+
   return {
     embedding: localVec,
     provider: 'local',
