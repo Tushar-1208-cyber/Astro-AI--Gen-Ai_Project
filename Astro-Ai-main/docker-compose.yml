@@ -8,8 +8,8 @@ services:
     ports:
       - "127.0.0.1:27017:27017"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-astro_admin}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-astro_secure_pass_change_me}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?MONGO_INITDB_ROOT_USERNAME environment variable is required}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?MONGO_INITDB_ROOT_PASSWORD environment variable is required}
       MONGO_INITDB_DATABASE: ${MONGO_DATABASE:-astro}
     volumes:
       - mongo_data:/data/db
@@ -20,9 +20,9 @@ services:
         - "CMD"
         - "mongosh"
         - "-u"
-        - "${MONGO_INITDB_ROOT_USERNAME:-astro_admin}"
+        - "${MONGO_INITDB_ROOT_USERNAME:?MONGO_INITDB_ROOT_USERNAME is required}"
         - "-p"
-        - "${MONGO_INITDB_ROOT_PASSWORD:-astro_secure_pass_change_me}"
+        - "${MONGO_INITDB_ROOT_PASSWORD:?MONGO_INITDB_ROOT_PASSWORD is required}"
         - "--authenticationDatabase"
         - "admin"
         - "--eval"
@@ -68,8 +68,8 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=9002
-      - JWT_SECRET=${JWT_SECRET:-}
-      - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_INITDB_ROOT_USERNAME:-astro_admin}:${MONGO_INITDB_ROOT_PASSWORD:-astro_secure_pass_change_me}@mongodb:27017/${MONGO_DATABASE:-astro}?authSource=admin}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET environment variable is required and must not be empty}
+      - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_INITDB_ROOT_USERNAME:?MONGO_INITDB_ROOT_USERNAME is required}:${MONGO_INITDB_ROOT_PASSWORD:?MONGO_INITDB_ROOT_PASSWORD is required}@mongodb:27017/${MONGO_DATABASE:-astro}?authSource=admin}
       - LOCAL_AI_URL=http://local-ai:8000/generate
       - GOOGLE_GENAI_API_KEY=${GOOGLE_GENAI_API_KEY:-}
     depends_on:
