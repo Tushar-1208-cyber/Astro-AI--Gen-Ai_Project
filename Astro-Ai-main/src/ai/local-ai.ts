@@ -60,6 +60,10 @@ export async function callLocalAI(prompt: string, maxTokens = 2048): Promise<str
   }
 
   // 2. Primary Local AI Server (TinyLlama-1.1B on FastAPI)
+  // Bounded timeouts: 55s in Vercel serverless (preempts 60s hard kill), 180s in local environments
+  const isVercel = Boolean(process.env.VERCEL);
+  const timeoutMs = isVercel ? 55000 : 180000;
+
   try {
     console.log(`📡 Calling Local AI Server at ${AI_SERVER_URL}...`);
     const response = await fetch(AI_SERVER_URL, {
@@ -70,7 +74,7 @@ export async function callLocalAI(prompt: string, maxTokens = 2048): Promise<str
         max_tokens: maxTokens,
         temperature: 0.7
       }),
-      signal: AbortSignal.timeout(180000) // 180s bounded timeout for local CPU/GPU execution
+      signal: AbortSignal.timeout(timeoutMs)
     });
 
     if (!response.ok) {
@@ -87,6 +91,7 @@ export async function callLocalAI(prompt: string, maxTokens = 2048): Promise<str
     let data = await response.json();
     if (!data || typeof data.response !== 'string' || data.response.trim().length === 0) {
       console.warn("⚠️ Local AI returned empty response, performing one retry...");
+      const retryTimeoutMs = isVercel ? 20000 : 180000;
       const retryRes = await fetch(AI_SERVER_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -95,7 +100,7 @@ export async function callLocalAI(prompt: string, maxTokens = 2048): Promise<str
           max_tokens: maxTokens,
           temperature: 0.6
         }),
-        signal: AbortSignal.timeout(180000)
+        signal: AbortSignal.timeout(retryTimeoutMs)
       });
       if (retryRes.ok) {
         data = await retryRes.json();
@@ -111,7 +116,8 @@ export async function callLocalAI(prompt: string, maxTokens = 2048): Promise<str
 
   } catch (error: any) {
     if (error.name === 'TimeoutError' || error.message?.includes('timeout')) {
-      throw new Error(`Local AI generation timed out after 180 seconds. The model may be overburdened or running on CPU.`);
+      const timeoutSec = Math.round(timeoutMs / 1000);
+      throw new Error(`Local AI generation timed out after ${timeoutSec} seconds. The model may be overburdened or running on CPU.`);
     }
     if (error.cause?.code === 'ECONNREFUSED' || error.message?.includes('fetch failed')) {
       throw new Error(`Cannot connect to Local AI server. Please ensure the local AI service is running and accessible.`);
