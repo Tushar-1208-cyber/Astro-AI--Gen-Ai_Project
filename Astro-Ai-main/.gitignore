@@ -58,3 +58,7 @@ Thumbs.db
 .turbo/
 .idea/
 .vscode/
+
+.vercel
+.env*
+!.env.example
