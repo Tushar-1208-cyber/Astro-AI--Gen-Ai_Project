@@ -13,7 +13,18 @@ const ALLOWED_MIME_TYPES: Record<string, string> = {
   'image/webp': '.webp',
 };
 
-// Ensure category directories exist
+/**
+ * Checks whether Cloudinary environment variables are configured.
+ */
+export function isCloudinaryConfigured(): boolean {
+  return Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME?.trim() &&
+    process.env.CLOUDINARY_API_KEY?.trim() &&
+    process.env.CLOUDINARY_API_SECRET?.trim()
+  );
+}
+
+// Ensure category directories exist for local fallback
 function ensureDir(dirPath: string) {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -21,8 +32,71 @@ function ensureDir(dirPath: string) {
 }
 
 /**
- * Validates and saves a Base64 data URI image into dedicated file storage.
- * Returns the public application URL path (/api/storage/<category>/<filename>).
+ * Uploads a Base64 image payload to Cloudinary via signed REST API.
+ * Never exposes the API secret to the client.
+ */
+async function uploadToCloudinary(
+  dataUri: string,
+  category: 'students' | 'attendance',
+  bufferLength: number,
+  mimeType: string
+): Promise<{ url: string; filename: string; size: number; mimeType: string }> {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME!.trim();
+  const apiKey = process.env.CLOUDINARY_API_KEY!.trim();
+  const apiSecret = process.env.CLOUDINARY_API_SECRET!.trim();
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const folder = `astro/${category}`;
+
+  // Cloudinary signature requires parameters sorted alphabetically
+  const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
+  const signature = crypto
+    .createHash('sha1')
+    .update(paramsToSign + apiSecret)
+    .digest('hex');
+
+  const formData = new URLSearchParams();
+  formData.append('file', dataUri);
+  formData.append('folder', folder);
+  formData.append('timestamp', timestamp.toString());
+  formData.append('api_key', apiKey);
+  formData.append('signature', signature);
+
+  const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let errorDetail = `HTTP ${response.status}`;
+    try {
+      const errJson = await response.json();
+      errorDetail = errJson.error?.message || errorDetail;
+    } catch {
+      // use status text
+    }
+    throw new Error(`Cloudinary upload failed: ${errorDetail}`);
+  }
+
+  const data = await response.json();
+  if (!data.secure_url) {
+    throw new Error('Cloudinary response missing secure_url');
+  }
+
+  return {
+    url: data.secure_url,
+    filename: data.public_id || `cloudinary_${Date.now()}`,
+    size: data.bytes || bufferLength,
+    mimeType,
+  };
+}
+
+/**
+ * Validates and saves a Base64 data URI image into persistent storage.
+ * - In production with Cloudinary configured: uploads to Cloudinary CDN.
+ * - In local development / offline testing: stores to local uploads directory.
+ * Returns the public image URL path.
  */
 export async function saveBase64Image(
   dataUri: string,
@@ -50,6 +124,12 @@ export async function saveBase64Image(
     throw new Error(`Image size (${Math.round(buffer.length / 1024)} KB) exceeds 5MB limit.`);
   }
 
+  // 1. Cloudinary upload path (Production)
+  if (isCloudinaryConfigured()) {
+    return await uploadToCloudinary(dataUri, category, buffer.length, mimeType);
+  }
+
+  // 2. Local filesystem storage path (Development & offline test suite fallback)
   const categoryDir = path.join(STORAGE_BASE_DIR, category);
   ensureDir(categoryDir);
 
@@ -76,7 +156,7 @@ export async function saveBase64Image(
 }
 
 /**
- * Safely deletes a stored image file from disk.
+ * Safely deletes a stored image file from Cloudinary or local disk.
  */
 export async function deleteStoredImage(
   fileUrlOrName: string,
@@ -84,7 +164,53 @@ export async function deleteStoredImage(
 ): Promise<boolean> {
   if (!fileUrlOrName) return false;
 
-  // Extract pure filename
+  // 1. Cloudinary deletion path
+  const isCloudinaryUrl =
+    fileUrlOrName.includes('cloudinary.com') ||
+    fileUrlOrName.startsWith('http://') ||
+    fileUrlOrName.startsWith('https://');
+
+  if (isCloudinaryUrl && isCloudinaryConfigured()) {
+    try {
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME!.trim();
+      const apiKey = process.env.CLOUDINARY_API_KEY!.trim();
+      const apiSecret = process.env.CLOUDINARY_API_SECRET!.trim();
+
+      // Extract public_id from Cloudinary URL: .../image/upload/v12345/astro/students/filename.jpg
+      const match = fileUrlOrName.match(/\/image\/upload\/(?:v\d+\/)?([^\.]+)/);
+      const publicId = match ? match[1] : fileUrlOrName;
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const paramsToSign = `public_id=${publicId}&timestamp=${timestamp}`;
+      const signature = crypto
+        .createHash('sha1')
+        .update(paramsToSign + apiSecret)
+        .digest('hex');
+
+      const formData = new URLSearchParams();
+      formData.append('public_id', publicId);
+      formData.append('timestamp', timestamp.toString());
+      formData.append('api_key', apiKey);
+      formData.append('signature', signature);
+
+      const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/destroy`;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        return data.result === 'ok' || data.result === 'not found';
+      }
+      return false;
+    } catch (error) {
+      console.error('[Storage] Cloudinary delete failed:', error);
+      return false;
+    }
+  }
+
+  // 2. Local disk deletion path (Fallback & Legacy records)
   const filename = path.basename(fileUrlOrName);
   const categoryDir = path.join(STORAGE_BASE_DIR, category);
   const filePath = path.join(categoryDir, filename);
@@ -106,7 +232,7 @@ export async function deleteStoredImage(
 }
 
 /**
- * Retrieves file path and metadata for authorized serving.
+ * Retrieves file path and metadata for authorized serving of local legacy files.
  */
 export function getStoredImageMeta(
   category: string,
