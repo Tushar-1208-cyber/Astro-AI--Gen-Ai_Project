@@ -16,15 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy server code
+# Copy server code and finetuned LoRA model adapters
 COPY ai_server.py .
+COPY my_finetuned_model ./my_finetuned_model
 
 EXPOSE 8000
 
 ENV HOST=0.0.0.0
 ENV PORT=8000
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=10 \
-    CMD curl -f http://localhost:8000/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=10 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
 CMD ["python", "ai_server.py"]
