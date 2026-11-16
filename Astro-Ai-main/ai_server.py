@@ -53,8 +53,10 @@ async def lifespan(app: FastAPI):
             )
             print("✅ AI Server is Ready and Loaded on GPU!" if device == "cuda" else "✅ AI Server is Ready on CPU!")
         else:
-            print("⚠️ Warning: Adapter path not found. Running base model only.")
-            model = base_model
+            raise RuntimeError(
+                f"FATAL: Required finetuned model adapters directory '{ADAPTER_PATH}' not found. "
+                f"Silent fallback to un-finetuned base model is prohibited in production."
+            )
             
     except Exception as e:
         print(f"❌ Critical Error during startup: {e}")
@@ -153,5 +155,8 @@ async def generate_text(request: ChatRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # Host 0.0.0.0 allows access from other devices on the same network
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Support Railway dynamic PORT environment variable (default 8000) and bind to 0.0.0.0
+    port = int(os.environ.get("PORT", 8000))
+    host = os.environ.get("HOST", "0.0.0.0")
+    print(f"🚀 Starting AI Server on {host}:{port}...")
+    uvicorn.run(app, host=host, port=port)
